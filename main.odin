@@ -97,7 +97,10 @@ main :: proc() {
 
         img := rl.LoadImageFromTexture(target.texture)
         rl.ImageFlipVertical(&img)
-        apply_palette_and_outline(&img)
+        
+        // apply_palette_and_outline(&img)
+        post_apply(&img)
+
         rl.UpdateTexture(target.texture, img.data)
         rl.UnloadImage(img)
 
