@@ -131,6 +131,8 @@ sample_surface :: proc(
 ) -> [dynamic]Surfel {
     out := make([dynamic]Surfel)
     e := h * 0.5
+    B :: 4
+    bh := f32(B) * h
 
     grad :: proc(sh: Shape, p: [3]f32, e: f32) -> [3]f32 {
         return {
@@ -142,39 +144,53 @@ sample_surface :: proc(
 
     ao_steps := [3]f32{2, 5, 10}
 
-    for z := minp.z; z < maxp.z; z += h {
-        for y := minp.y; y < maxp.y; y += h {
-            for x := minp.x; x < maxp.x; x += h {
-                p := [3]f32{x, y, z}
-                d := shape_dist(sh, p)
-                if abs(d) > h * 1.2 do continue
+    // Hierarchical grid: skip whole BxBxB blocks that are clearly empty.
+    for bz := minp.z; bz < maxp.z; bz += bh {
+        for by := minp.y; by < maxp.y; by += bh {
+            for bx := minp.x; bx < maxp.x; bx += bh {
+                mid := [3]f32{bx + bh*0.5, by + bh*0.5, bz + bh*0.5}
+                if abs(shape_dist(sh, mid)) > bh * 1.6 do continue
 
-                g  := grad(sh, p, e)
-                gl := linalg.vector_length(g) / (2 * e)
-                if gl < 1e-5 do continue
-                if abs(d) / gl > h * 0.6 do continue
+                for k in 0..<B {
+                    for j in 0..<B {
+                        for i in 0..<B {
+                            p := [3]f32{
+                                bx + (f32(i) + 0.5) * h,
+                                by + (f32(j) + 0.5) * h,
+                                bz + (f32(k) + 0.5) * h,
+                            }
+                            d := shape_dist(sh, p)
+                            if abs(d) > h * 1.2 do continue
 
-                for _ in 0..<2 {
-                    s := d / (gl * gl) / (2 * e)
-                    p -= g * s
-                    d  = shape_dist(sh, p)
-                    g  = grad(sh, p, e)
-                    gl = linalg.vector_length(g) / (2 * e)
-                    if gl < 1e-5 do break
+                            g  := grad(sh, p, e)
+                            gl := linalg.vector_length(g) / (2 * e)
+                            if gl < 1e-5 do continue
+                            if abs(d) / gl > h * 0.6 do continue
+
+                            for _ in 0..<2 {
+                                s := d / (gl * gl) / (2 * e)
+                                p -= g * s
+                                d  = shape_dist(sh, p)
+                                g  = grad(sh, p, e)
+                                gl = linalg.vector_length(g) / (2 * e)
+                                if gl < 1e-5 do break
+                            }
+
+                            n := linalg.normalize(g)
+
+                            occ: f32 = 0
+                            for s in ao_steps {
+                                dd := shape_dist(sh, p + n * (s * h))
+                                occ += max(0, 1 - dd / (s * h))
+                            }
+                            ao := max(0, 1 - occ / 2.2)
+
+                            mat := shape_mat(sh, p)
+                            col := paint(mat, p, n, ao)
+                            append(&out, Surfel{pos = p, normal = n, color = col, ao = ao})
+                        }
+                    }
                 }
-
-                n := linalg.normalize(g)
-
-                occ: f32 = 0
-                for s in ao_steps {
-                    dd := shape_dist(sh, p + n * (s * h))
-                    occ += max(0, 1 - dd / (s * h))
-                }
-                ao := max(0, 1 - occ / 2.2)
-
-                mat := shape_mat(sh, p)
-                col := paint(mat, p, n, ao)
-                append(&out, Surfel{pos = p, normal = n, color = col, ao = ao})
             }
         }
     }
