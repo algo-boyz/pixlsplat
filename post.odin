@@ -10,7 +10,7 @@ package pixlsplat
 import rl "vendor:raylib"
 
 // Tunables
-POST_DITHER: f32 = 0.65   // 0 = pure nearest, 1 = full Bayer mix
+POST_DITHER: f32 = 0  // 0 = pure nearest, 1 = full Bayer mix
 POST_OUTLINE_R: i32 = 38
 POST_OUTLINE_G: i32 = 38
 POST_OUTLINE_B: i32 = 32
@@ -79,10 +79,13 @@ post_apply :: proc(img: ^rl.Image) {
             c := rl.GetImageColor(img^, i32(x), i32(y))
             if c.a < 8 do continue
             cf := [3]f32{f32(c.r), f32(c.g), f32(c.b)}
-            a, b, t := two_nearest(cf)
+            a, b, mix := two_nearest(cf)
             q := a
-            if POST_DITHER > 0 && t * POST_DITHER > bayer4(x, y) {
-                q = b
+            if POST_DITHER > 0 {
+                // mix=0 → pure nearest; only contested pixels dither
+                if mix * POST_DITHER > bayer4(x, y) {
+                    q = b
+                }
             }
             rl.ImageDrawPixel(img, i32(x), i32(y), {q[0], q[1], q[2], 255})
         }
