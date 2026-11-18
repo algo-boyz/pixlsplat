@@ -64,14 +64,14 @@ free_grass :: proc(
     colors: [][2][4]u8,
     r: f32 = 1.25,
 ) {
-    for i := 0; i < n; {
+    for i, tries := 0, 0; i < n && tries < n * 60; tries += 1 {
         a  := mulberry32_next(&f.rnd) * math.TAU
         rr := math.sqrt(mulberry32_next(&f.rnd)) * r
         x  := math.cos(a) * rr
         z  := math.sin(a) * rr
         y  := ctx_height(c, x, z)
 
-        if shape_dist(c.s, {x, y + 0.06, z}) < 0.035 {
+        if shape_dist(c.s, {x, y + 0.06, z}) < -0.02 {
             continue
         }
 
@@ -91,13 +91,13 @@ free_dots :: proc(
     size: f32 = 0.016,
     r: f32 = 1.2,
 ) {
-    for i := 0; i < n; {
+    for i, tries := 0, 0; i < n && tries < n * 60; tries += 1 {
         a  := mulberry32_next(&f.rnd) * math.TAU
         rr := math.sqrt(mulberry32_next(&f.rnd)) * r
         x  := math.cos(a) * rr
         z  := math.sin(a) * rr
         y0 := ctx_height(c, x, z)
-        if shape_dist(c.s, {x, y0 + 0.06, z}) < 0.035 {
+        if shape_dist(c.s, {x, y0 + 0.06, z}) < -0.02 {
             continue
         }
         y := y0 + y_range[0] + mulberry32_next(&f.rnd) * (y_range[1] - y_range[0])
