@@ -58,52 +58,44 @@ build_hello :: proc() -> (surfels: [dynamic]Surfel, free: Free_List) {
 
     rocks(&c, M_ROCK, 5, 0.1)
 
-    paint :: proc(mat: int, p, n: [3]f32, ao: f32) -> [4]u8 {
+    // Colours, as in the original paint(): the surface colour plus flags.
+    // Lighting and palette snapping happen in bake().
+    paint :: proc(mat: int, p, n: [3]f32) -> Paint {
         switch mat {
         case M_LAMP:
-            return {255, 207, 90, 255}
+            return {c = hex_rgb(0xffcf5a), emissive = true}
         case M_POST:
-            return {43, 39, 64, 255}
+            return {c = hex_rgb(0x2b2740)}
         case M_TRUNK:
-            k := 0.85 + 0.3 * vnoise3(p.x*30, p.y*5, p.z*30)
-            return {
-                u8(math.clamp(74 * k, 0, 255)),
-                u8(math.clamp(42 * k, 0, 255)),
-                u8(math.clamp(38 * k, 0, 255)),
-                255,
-            }
+            return {c = mul_rgb(hex_rgb(0x4a2a26), 0.85 + 0.3 * vnoise3(p.x*30, p.y*5, p.z*30))}
         case M_LEAVES:
             if vnoise3(p.x*12, p.y*12, p.z*12) > 0.55 {
-                return {168, 216, 96, 255}
+                return {c = hex_rgb(0xa8d860), leaf = true}
             }
-            return {79, 154, 74, 255}
+            return {c = hex_rgb(0x4f9a4a), leaf = true}
         case M_ROCK:
-            k := 0.8 + 0.4 * vnoise3(p.x*8, p.y*10, p.z*8)
-            return {
-                u8(math.clamp(128 * k, 0, 255)),
-                u8(math.clamp(126 * k, 0, 255)),
-                u8(math.clamp(146 * k, 0, 255)),
-                255,
-            }
+            return {c = mul_rgb(hex_rgb(0x807e92), 0.8 + 0.4 * vnoise3(p.x*8, p.y*10, p.z*8))}
         case: // grass
             if n.y < 0.5 {
-                return {74, 42, 38, 255}
+                return {c = hex_rgb(0x4a2a26)}
             }
             t := sstep(0.3, 0.7, vnoise3(p.x*4, 2, p.z*4))
-            // mix #1f4a38 → #4f9a4a
-            return {
-                u8(math.clamp(31 + (79-31)*t, 0, 255)),
-                u8(math.clamp(74 + (154-74)*t, 0, 255)),
-                u8(math.clamp(56 + (74-56)*t, 0, 255)),
-                255,
-            }
+            return {c = mix_rgb(hex_rgb(0x1f4a38), hex_rgb(0x4f9a4a), t)}
         }
-        return {255, 255, 255, 255}
+        return {c = {1, 1, 1}}
     }
 
     minp := [3]f32{-c.R - 0.6, -0.4 - c.R*1.1, -c.R - 0.6}
     maxp := [3]f32{ c.R + 0.6,  c.top + 0.1,     c.R + 0.6}
-    surfels = sample_surface(c.s, minp, maxp, SURFEL_H, paint)
+    surfels = sample_surface(c.s, minp, maxp, SURFEL_H)
+
+    // Lantern: point light with its own visibility rays (see light.odin)
+    lights := [?]Light{
+        {pos = {0.6, 0.56, 0.35}, color = {1.0, 0.72, 0.32}, power = 1.0},
+    }
+    lighting := make_lighting(c.s, lights[:], PALETTE[:])
+    defer delete_lighting(&lighting)
+    bake(&c, surfels[:], paint, &lighting)
 
     // Free list owns its own RNG copy
     free = make_free(c.rnd)

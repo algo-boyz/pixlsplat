@@ -117,17 +117,20 @@ shape_mat :: proc(s: Shape, p: [3]f32) -> int {
 }
 
 Surfel :: struct {
-    pos:    [3]f32,
-    normal: [3]f32,
-    color:  [4]u8,
-    ao:     f32,
+    pos:      [3]f32,
+    normal:   [3]f32,
+    color:    [4]u8,   // filled in by bake(): the final, lit palette colour
+    ao:       f32,
+    mat:      int,
+    emissive: bool,    // set by bake(): drawn unlit and slightly boosted
 }
 
+// Samples the surface into surfels (position, normal, ao, material).
+// Colours are assigned afterwards by bake() (island.odin).
 sample_surface :: proc(
     sh:    Shape,
     minp, maxp: [3]f32,
     h:     f32,
-    paint: proc(mat: int, p, n: [3]f32, ao: f32) -> [4]u8,
 ) -> [dynamic]Surfel {
     out := make([dynamic]Surfel)
     e := h * 0.5
@@ -186,8 +189,7 @@ sample_surface :: proc(
                             ao := max(0, 1 - occ / 2.2)
 
                             mat := shape_mat(sh, p)
-                            col := paint(mat, p, n, ao)
-                            append(&out, Surfel{pos = p, normal = n, color = col, ao = ao})
+                            append(&out, Surfel{pos = p, normal = n, color = {255, 255, 255, 255}, ao = ao, mat = mat})
                         }
                     }
                 }

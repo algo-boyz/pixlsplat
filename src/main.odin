@@ -18,13 +18,17 @@ Sort_Item :: struct {
     free: bool,   // index into free.items instead of surfels
 }
 
-draw_surfel :: proc(s: Surfel, sun: [3]f32, soft: bool) {
-    ndotl := math.clamp(linalg.dot(s.normal, sun), 0.25, 1.0)
-    col := rl.Color{
-        u8(f32(s.color[0]) * ndotl),
-        u8(f32(s.color[1]) * ndotl),
-        u8(f32(s.color[2]) * ndotl),
-        255,
+// The colour is already lit (bake() in island.odin), so it is drawn as is.
+// Emissive surfels (the lantern) are boosted like the original's shader does.
+draw_surfel :: proc(s: Surfel, soft: bool) {
+    col := rl.Color{s.color[0], s.color[1], s.color[2], 255}
+    if s.emissive {
+        col = {
+            u8(min(f32(s.color[0]) * 1.15, 255)),
+            u8(min(f32(s.color[1]) * 1.15, 255)),
+            u8(min(f32(s.color[2]) * 1.15, 255)),
+            255,
+        }
     }
     draw_oriented_disc(s.pos, s.normal, splat_radius(SPLAT_R, soft), col)
 }
@@ -80,7 +84,7 @@ main :: proc() {
         position   = {2.8, 1.7, 2.8},
         target     = {0, 0.25, 0},
         up         = {0, 1, 0},
-        fovy       = 40,
+        fovy       = 30,
         projection = .PERSPECTIVE,
     }
 
@@ -134,7 +138,6 @@ main :: proc() {
         fwd   := linalg.normalize(camera.target - camera.position)
         right := linalg.normalize(linalg.cross(fwd, camera.up))
         cup   := linalg.cross(right, fwd)
-        sun   := linalg.normalize([3]f32{0.55, 0.75, 0.35})
         soft  := !cfg.crisp
 
         // ---- pass 1: splats into a transparent, premultiplied target -----------
@@ -158,7 +161,7 @@ main :: proc() {
         if !soft {
             // hard pixels: opaque discs write depth, then translucent light is
             // blended over them without writing depth
-            for s in surfels do draw_surfel(s, sun, false)
+            for s in surfels do draw_surfel(s, false)
             for fs in free.items {
                 if fs.kind == .Lit || fs.kind == .Emissive do draw_free(fs, right, cup, false)
             }
@@ -184,7 +187,7 @@ main :: proc() {
                 if it.free {
                     draw_free(free.items[it.i], right, cup, true)
                 } else {
-                    draw_surfel(surfels[it.i], sun, true)
+                    draw_surfel(surfels[it.i], true)
                 }
             }
             rlgl.EnableDepthMask()

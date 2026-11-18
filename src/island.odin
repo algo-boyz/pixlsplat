@@ -117,3 +117,40 @@ rocks :: proc(c: ^Ctx, mat: int, n: int, size: f32 = 0.1) {
         shape_add_ellipsoid(&c.s, {x, y + r*0.25, z}, {r*1.3, r*0.8, r}, mat, 0.02)
     }
 }
+// What a material's paint callback returns for one surfel.
+//   c:        the surface colour, 0..1
+//   emissive: drawn unlit (lamps, flames); skips all lighting in bake()
+//   leaf:     foliage, lit from both sides and only half shadowed
+Paint :: struct {
+    c:        [3]f32,
+    emissive: bool,
+    leaf:     bool,
+}
+
+Paint_Proc :: #type proc(mat: int, p, n: [3]f32) -> Paint
+
+// Turns sampled surfels into painted, lit ones (port of bake() in island.js).
+//   lighting:   from make_lighting (light.odin): bakes sun, shadows, sky and
+//               lamps into each surfel's final palette colour. Without it the
+//               colour is just darkened by AO.
+//   depth_shade: darker towards the underside of the island
+bake :: proc(c: ^Ctx, surfels: []Surfel, paint: Paint_Proc, lighting: ^Lighting = nil, depth_shade := true) {
+    for &s in surfels {
+        pt := paint(s.mat, s.pos, s.normal)
+        k  := pt.c
+        s.emissive = pt.emissive
+        if !pt.emissive {
+            if lighting == nil {
+                k = mul_rgb(k, 0.5 + 0.5 * s.ao)
+            }
+            // darker towards the bottom of the island
+            if depth_shade && s.pos.y < -0.2 {
+                k = mul_rgb(k, 1 - 0.45 * sstep(-0.2, -c.R, s.pos.y))
+            }
+            if lighting != nil {
+                k = light_shade(lighting, k, s.pos, s.normal, s.ao, pt.leaf)
+            }
+        }
+        s.color = {to_u8(k[0]), to_u8(k[1]), to_u8(k[2]), 255}
+    }
+}
