@@ -96,7 +96,7 @@ build_hello :: proc() -> (surfels: [dynamic]Surfel, free: Free_List) {
 
     minp := [3]f32{-c.R - 0.6, -0.4 - c.R*1.1, -c.R - 0.6}
     maxp := [3]f32{ c.R + 0.6,  c.top + 0.1,     c.R + 0.6}
-    surfels = sample_surface(c.s, minp, maxp, 0.040, paint)
+    surfels = sample_surface(c.s, minp, maxp, SURFEL_H, paint)
 
     // Free list owns its own RNG copy
     free = make_free(c.rnd)

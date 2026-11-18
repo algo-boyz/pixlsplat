@@ -8,8 +8,37 @@ import rlgl "vendor:raylib/rlgl"
 // 3D drawing primitives for oriented surfels / blades.
 // Pixel-art quantise + outline live in post.odin.
 
+// Splat sizing, matching the original:
+//   bake() samples surfels on a lattice of spacing h = 0.02, and each splat is
+//   a Gaussian with sigma = 0.66 h drawn hard-edged out to maxStdDev = 1.5,
+//   i.e. a disc of radius ~1.0 h. Discs must be about 2h across to overlap and
+//   leave no gaps between lattice points; anything under ~1.41h across shows
+//   the lattice as a raster grid.
+SURFEL_H       :: f32(0.02)
+SPLAT_SIGMA    :: f32(0.66) * SURFEL_H
+SPLAT_STD_DEV  :: f32(1.5)
+SPLAT_R        :: SPLAT_SIGMA * SPLAT_STD_DEV   // disc RADIUS in world units
+
 // Hard circular disc texture (white inside, transparent outside)
 disc_tex: rl.Texture2D
+
+// raylib's default fragment shader has no alpha test, so the transparent
+// corners of a disc quad would still write depth and punch holes in the discs
+// behind/next to it. This shader discards them.
+disc_shader: rl.Shader
+
+DISC_FS :: `#version 330
+in vec2 fragTexCoord;
+in vec4 fragColor;
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+out vec4 finalColor;
+void main() {
+    vec4 t = texture(texture0, fragTexCoord);
+    if (t.a < 0.5) discard;
+    finalColor = vec4((fragColor * colDiffuse).rgb, 1.0);
+}
+`
 
 init_disc_texture :: proc(size: i32 = 64) {
     img := rl.GenImageColor(size, size, rl.BLANK)
@@ -31,13 +60,17 @@ init_disc_texture :: proc(size: i32 = 64) {
     disc_tex = rl.LoadTextureFromImage(img)
     rl.SetTextureFilter(disc_tex, .POINT)   // keep the edge hard
     rl.SetTextureWrap(disc_tex, .CLAMP)
+
+    disc_shader = rl.LoadShaderFromMemory(nil, DISC_FS)
 }
 
 unload_disc_texture :: proc() {
+    rl.UnloadShader(disc_shader)
     rl.UnloadTexture(disc_tex)
 }
 
-draw_oriented_disc :: proc(pos, normal: [3]f32, size: f32, col: rl.Color) {
+// `radius` is the disc radius in world units.
+draw_oriented_disc :: proc(pos, normal: [3]f32, radius: f32, col: rl.Color) {
     // Build the same oriented frame as before
     up := [3]f32{0, 1, 0}
     if abs(linalg.dot(normal, up)) > 0.93 {
@@ -46,7 +79,7 @@ draw_oriented_disc :: proc(pos, normal: [3]f32, size: f32, col: rl.Color) {
     t := linalg.normalize(linalg.cross(up, normal))
     b := linalg.cross(normal, t)
 
-    half := size * 0.5          // true radius now (was 0.52 for square)
+    half := radius              // the quad spans [-radius, radius]; the texture masks it to a circle
 
     // Four corners of the oriented square that will be masked by the circle
     p0 := pos + (-t - b) * half

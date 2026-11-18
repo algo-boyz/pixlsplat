@@ -10,7 +10,7 @@ package pixlsplat
 import rl "vendor:raylib"
 
 // Tunables
-POST_DITHER: f32 = 0.35  // 0 = pure nearest, 1 = full Bayer mix
+POST_DITHER: f32 = 0.0   // original default is OFF; any value > 0 stamps a Bayer lattice over flat colour
 POST_OUTLINE_R: i32 = 38
 POST_OUTLINE_G: i32 = 38
 POST_OUTLINE_B: i32 = 32

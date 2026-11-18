@@ -5,8 +5,6 @@ import "core:math"
 import "core:math/linalg"
 import rl "vendor:raylib"
 
-SPLAT_R: f32 = 0.028
-
 main :: proc() {
     rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
     rl.InitWindow(1280, 720, "pixlsplat – Hello island")
@@ -70,7 +68,8 @@ main :: proc() {
         rl.BeginTextureMode(target)
         rl.ClearBackground({PALETTE[0][0], PALETTE[0][1], PALETTE[0][2], 255})
         rl.BeginMode3D(camera)
-
+        rl.BeginShaderMode(disc_shader)
+        
         sun := linalg.normalize([3]f32{0.55, 0.75, 0.35})
 
         for s in surfels {
@@ -97,6 +96,7 @@ main :: proc() {
         }
 
         rl.EndMode3D()
+        rl.EndShaderMode()
         rl.EndTextureMode()
 
         img := rl.LoadImageFromTexture(target.texture)
