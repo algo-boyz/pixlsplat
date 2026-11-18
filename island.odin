@@ -53,6 +53,18 @@ island_under_dist :: proc(p: [3]f32) -> f32 {
     return max(d, p.y - c.top_y + 0.12)
 }
 
+// Heightfield slab top — matches original JS island top SDF.
+island_top_dist :: proc(p: [3]f32) -> f32 {
+    c := _island_ctx
+    hh: f32 = 0.16
+    r  := math.hypot(p.x, p.z)
+    outline := c.R * (1 + 0.08 * (vnoise3(p.x * 1.7 + c.seed, 3, p.z * 1.7) - 0.5))
+    dx := r - outline + 0.07
+    hy := ctx_height(c, p.x, p.z)
+    dy := abs(p.y - hy + hh) - hh + 0.07
+    return math.hypot(max(dx, 0), max(dy, 0)) + min(max(dx, dy), 0) - 0.07
+}
+
 island :: proc(c: ^Ctx, m_top, m_under: int, bump: f32 = 0.03, rise: f32 = 0, top_y: f32 = 0) {
     c.top_y = top_y
     c.bump  = bump
@@ -62,9 +74,7 @@ island :: proc(c: ^Ctx, m_top, m_under: int, bump: f32 = 0.03, rise: f32 = 0, to
     R := c.R
 
     // Top grass disc (visual stand-in for the full height-field slab)
-    shape_add_ellipsoid(&c.s, {0, top_y + 0.02, 0}, {R*1.02, 0.09, R*1.02}, m_top)
-    shape_add_ellipsoid(&c.s, {0, top_y - 0.01, 0}, {R*0.98, 0.12, R*0.98}, m_top, 0.08)
-
+    shape_add_func(&c.s, island_top_dist, m_top, 0)
     // Underside with noise
     shape_add_func(&c.s, island_under_dist, m_under, 0.09)
 

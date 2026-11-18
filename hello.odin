@@ -113,7 +113,7 @@ build_hello :: proc() -> (surfels: [dynamic]Surfel, free: Free_List) {
     }
     free_dots(&free, &c, 40, flower_cols)
 
-    free_glow(&free, 0.6, 0.56, 0.35, 0.28, {255, 207, 90, 255})
+    free_glow(&free, 0.6, 0.56, 0.35, 0.18, {255, 207, 90, 255})
 
     return
 }

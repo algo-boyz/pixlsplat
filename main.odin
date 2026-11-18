@@ -5,6 +5,8 @@ import "core:math"
 import "core:math/linalg"
 import rl "vendor:raylib"
 
+SPLAT_R: f32 = 0.028
+
 main :: proc() {
     rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
     rl.InitWindow(1280, 720, "pixlsplat – Hello island")
@@ -73,16 +75,17 @@ main :: proc() {
             col[0] = u8(f32(col[0]) * ndotl)
             col[1] = u8(f32(col[1]) * ndotl)
             col[2] = u8(f32(col[2]) * ndotl)
-            draw_oriented_disc(s.pos, s.normal, 0.014, {col[0], col[1], col[2], 255})
+            draw_oriented_disc(s.pos, s.normal, SPLAT_R, {col[0], col[1], col[2], 255})
         }
 
         for fs in free.items {
             col := fs.color
             if fs.kind == .Glow {
-                col[0] = u8(min(255, i32(col[0]) + 40))
-                col[1] = u8(min(255, i32(col[1]) + 30))
-            }
-            if fs.kind == .Sway {
+                if fs.scale.x > 0.18 do continue   // drop any leftover large ring
+                col[0] = u8(min(255, i32(col[0]) + 20))
+                col[1] = u8(min(255, i32(col[1]) + 15))
+                draw_oriented_disc(fs.pos, fs.up, fs.scale.x * 0.9, {col[0], col[1], col[2], 255})
+            } else if fs.kind == .Sway {
                 draw_oriented_blade(fs.pos, fs.right, fs.up, fs.scale.x, fs.scale.y, {col[0],col[1],col[2],255})
             } else {
                 draw_oriented_disc(fs.pos, fs.up, fs.scale.x * 2, {col[0],col[1],col[2],255})

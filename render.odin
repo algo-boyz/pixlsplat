@@ -20,6 +20,8 @@ draw_oriented_disc :: proc(pos, normal: [3]f32, size: f32, col: rl.Color) {
 
     rl.DrawTriangle3D(p0, p1, p2, col)
     rl.DrawTriangle3D(p0, p2, p3, col)
+    rl.DrawTriangle3D(p0, p2, p1, col)
+    rl.DrawTriangle3D(p0, p3, p2, col)
 }
 
 draw_oriented_blade :: proc(pos, right, up: [3]f32, half_w, half_h: f32, col: rl.Color) {
