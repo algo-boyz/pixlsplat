@@ -13,10 +13,14 @@ main :: proc() {
     defer rl.CloseWindow()
     rl.SetTargetFPS(60)
 
-    ART_W, ART_H :: 320, 180
+    ART_W, ART_H :: 640, 360
+
     target := rl.LoadRenderTexture(ART_W, ART_H)
     defer rl.UnloadRenderTexture(target)
     rl.SetTextureFilter(target.texture, .POINT)
+
+    init_disc_texture()
+    defer unload_disc_texture()
 
     camera := rl.Camera3D{
         position   = {2.8, 1.7, 2.8},
@@ -97,7 +101,7 @@ main :: proc() {
 
         img := rl.LoadImageFromTexture(target.texture)
         rl.ImageFlipVertical(&img)
-        
+
         // apply_palette_and_outline(&img)
         post_apply(&img)
 
