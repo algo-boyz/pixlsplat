@@ -26,6 +26,13 @@ PALETTE := [12][4]u8{
     {255, 241, 192, 255}, // #fff1c0
 }
 
+// Extra colours that only translucent light (halos, beams, smoke) may take.
+// They are appended after PALETTE in the shader (paletteSize vs surfaceSize).
+GLOW_PALETTE := [2][4]u8{
+    {0x4e, 0x3f, 0x3a, 255}, // #4e3f3a
+    {0x8a, 0x73, 0x56, 255}, // #8a7356
+}
+
 build_hello :: proc() -> (surfels: [dynamic]Surfel, free: Free_List) {
     c := make_ctx(1.3, 0.3, 42)
     defer delete(c.s.adds)
@@ -113,7 +120,7 @@ build_hello :: proc() -> (surfels: [dynamic]Surfel, free: Free_List) {
     }
     free_dots(&free, &c, 40, flower_cols)
 
-    free_glow(&free, 0.6, 0.56, 0.35, 0.18, {255, 207, 90, 255})
+    free_glow(&free, 0.6, 0.56, 0.35, 0.28, {255, 207, 90, 255})
 
     return
 }

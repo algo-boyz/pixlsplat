@@ -116,7 +116,8 @@ free_dots :: proc(
 }
 
 free_glow :: proc(f: ^Free_List, x, y, z, radius: f32, col: [4]u8) {
-    rings := [2][2]f32{{0.45, 0.55}, {0.22, 0.85}}
+    // same rings as scene-kit.js: [scale factor, alpha], widest and faintest first
+    rings := [3][2]f32{{1.0, 0.14}, {0.62, 0.30}, {0.32, 0.55}}
     for pair in rings {
         k, a := pair[0], pair[1]
         append(&f.items, Free_Splat{
