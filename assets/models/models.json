@@ -1,0 +1,55 @@
+[
+  {
+    "name": "caravan",
+    "label": "Caravan camp",
+    "count": 147769,
+    "scene": true
+  },
+  {
+    "name": "shrine",
+    "label": "Autumn shrine",
+    "count": 167497,
+    "scene": true
+  },
+  {
+    "name": "lighthouse",
+    "label": "Lighthouse",
+    "count": 143376,
+    "scene": true
+  },
+  {
+    "name": "hello",
+    "label": "Hello island",
+    "count": 64681,
+    "scene": true
+  },
+  {
+    "name": "minotaur",
+    "count": 152816,
+    "label": "Minotaur",
+    "query": "light=1.3"
+  },
+  {
+    "name": "toad",
+    "count": 151239,
+    "label": "Toad",
+    "query": "light=1.3"
+  },
+  {
+    "name": "vulture",
+    "count": 150828,
+    "label": "Vulture",
+    "query": "light=1.3"
+  },
+  {
+    "name": "hyena",
+    "count": 148379,
+    "label": "Hyena",
+    "query": "light=1.3"
+  },
+  {
+    "name": "dragon_shield",
+    "count": 148465,
+    "label": "Dragon shield"
+  }
+]
