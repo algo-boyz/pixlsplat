@@ -71,7 +71,7 @@ free_grass :: proc(
         z  := math.sin(a) * rr
         y  := ctx_height(c, x, z)
 
-        if shape_dist(c.s, {x, y + 0.06, z}) < -0.02 {
+        if shape_dist(c.s, {x, y + 0.06, z}) < 0.035 {
             continue
         }
 
@@ -97,7 +97,7 @@ free_dots :: proc(
         x  := math.cos(a) * rr
         z  := math.sin(a) * rr
         y0 := ctx_height(c, x, z)
-        if shape_dist(c.s, {x, y0 + 0.06, z}) < -0.02 {
+        if shape_dist(c.s, {x, y0 + 0.06, z}) < 0.035 {
             continue
         }
         y := y0 + y_range[0] + mulberry32_next(&f.rnd) * (y_range[1] - y_range[0])

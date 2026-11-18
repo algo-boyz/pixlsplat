@@ -39,43 +39,82 @@ box_dist :: proc(b: Box, p: [3]f32) -> f32 {
     return linalg.vector_length(linalg.max(q, 0)) + min(max(q.x, max(q.y, q.z)), 0) - b.r
 }
 
-Prim_Kind :: enum { Sphere, Ellipsoid, Cone, Box, Func }
+// Upright capped cylinder (centre, radius, half-height, corner radius).
+Cyl :: struct { c: [3]f32, radius, half_h, r: f32 }
+cyl_dist :: proc(cy: Cyl, p: [3]f32) -> f32 {
+    dx := math.hypot(p.x - cy.c.x, p.z - cy.c.z) - cy.radius + cy.r
+    dy := abs(p.y - cy.c.y) - cy.half_h + cy.r
+    return math.hypot(max(dx, 0), max(dy, 0)) + min(max(dx, dy), 0) - cy.r
+}
+
+Prim_Kind :: enum { Sphere, Ellipsoid, Cone, Box, Cyl, Func }
 
 Prim :: struct {
-    kind: Prim_Kind,
-    mat:  int,
-    k:    f32,
-    f:    proc(p: [3]f32) -> f32,
+    kind:   Prim_Kind,
+    mat:    int,
+    k:      f32,
+    is_sub: bool,
+    bound:  [4]f32, // cx,cy,cz,r — r<=0 means unbound
+    f:      proc(p: [3]f32) -> f32,
     using data: struct #raw_union {
         sphere:    Sphere,
         ellipsoid: Ellipsoid,
         cone:      Cone,
         box:       Box,
+        cyl:       Cyl,
     },
 }
 
 Shape :: struct {
-    adds: [dynamic]Prim,
+    adds:          [dynamic]Prim,
+    current_bound: [4]f32, // r<=0 = clear
 }
 
 shape_new :: proc() -> Shape {
-    return {adds = make([dynamic]Prim)}
+    return {adds = make([dynamic]Prim), current_bound = {0, 0, 0, -1}}
+}
+
+shape_bound :: proc(s: ^Shape, cx, cy, cz, r: f32) {
+    s.current_bound = {cx, cy, cz, r}
+}
+shape_bound_clear :: proc(s: ^Shape) {
+    s.current_bound = {0, 0, 0, -1}
+}
+
+_push_prim :: proc(s: ^Shape, pr: Prim) {
+    pr := pr
+    pr.bound = s.current_bound
+    append(&s.adds, pr)
 }
 
 shape_add_sphere :: proc(s: ^Shape, c: [3]f32, r: f32, mat: int, k: f32 = 0) {
-    append(&s.adds, Prim{kind = .Sphere, mat = mat, k = k, sphere = {c, r}})
+    _push_prim(s, Prim{kind = .Sphere, mat = mat, k = k, sphere = {c, r}})
 }
 shape_add_ellipsoid :: proc(s: ^Shape, c: [3]f32, radii: [3]f32, mat: int, k: f32 = 0) {
-    append(&s.adds, Prim{kind = .Ellipsoid, mat = mat, k = k, ellipsoid = {c, radii}})
+    _push_prim(s, Prim{kind = .Ellipsoid, mat = mat, k = k, ellipsoid = {c, radii}})
 }
 shape_add_cone :: proc(s: ^Shape, a, b: [3]f32, r1, r2: f32, mat: int, k: f32 = 0) {
-    append(&s.adds, Prim{kind = .Cone, mat = mat, k = k, cone = cone_make(a, b, r1, r2)})
+    _push_prim(s, Prim{kind = .Cone, mat = mat, k = k, cone = cone_make(a, b, r1, r2)})
 }
 shape_add_box :: proc(s: ^Shape, c: [3]f32, half: [3]f32, r: f32, mat: int, k: f32 = 0) {
-    append(&s.adds, Prim{kind = .Box, mat = mat, k = k, box = {c, half, r}})
+    _push_prim(s, Prim{kind = .Box, mat = mat, k = k, box = {c, half, r}})
 }
 shape_add_func :: proc(s: ^Shape, f: proc(p: [3]f32) -> f32, mat: int, k: f32 = 0) {
-    append(&s.adds, Prim{kind = .Func, mat = mat, k = k, f = f})
+    _push_prim(s, Prim{kind = .Func, mat = mat, k = k, f = f})
+}
+
+shape_add_cyl :: proc(s: ^Shape, c: [3]f32, radius, half_h, r: f32, mat: int, k: f32 = 0) {
+    _push_prim(s, Prim{kind = .Cyl, mat = mat, k = k, cyl = {c, radius, half_h, r}})
+}
+
+shape_sub_sphere :: proc(s: ^Shape, c: [3]f32, r: f32, mat: int) {
+    _push_prim(s, Prim{kind = .Sphere, mat = mat, is_sub = true, sphere = {c, r}})
+}
+shape_sub_ellipsoid :: proc(s: ^Shape, c: [3]f32, radii: [3]f32, mat: int) {
+    _push_prim(s, Prim{kind = .Ellipsoid, mat = mat, is_sub = true, ellipsoid = {c, radii}})
+}
+shape_sub_func :: proc(s: ^Shape, f: proc(p: [3]f32) -> f32, mat: int) {
+    _push_prim(s, Prim{kind = .Func, mat = mat, is_sub = true, f = f})
 }
 
 prim_dist :: proc(pr: Prim, p: [3]f32) -> f32 {
@@ -84,9 +123,14 @@ prim_dist :: proc(pr: Prim, p: [3]f32) -> f32 {
     case .Ellipsoid: return ellipsoid_dist(pr.ellipsoid, p)
     case .Cone:      return cone_dist(pr.cone, p)
     case .Box:       return box_dist(pr.box, p)
+    case .Cyl:       return cyl_dist(pr.cyl, p)
     case .Func:      return pr.f(p)
     }
     return 1e9
+}
+
+far_bound :: proc(b: [4]f32, p: [3]f32) -> f32 {
+    return linalg.vector_length(p - [3]f32{b[0], b[1], b[2]}) - b[3]
 }
 
 smin :: proc(a, b, k: f32) -> f32 {
@@ -98,7 +142,15 @@ smin :: proc(a, b, k: f32) -> f32 {
 shape_dist :: proc(s: Shape, p: [3]f32) -> f32 {
     d: f32 = 1e9
     for a in s.adds {
+        if a.is_sub do continue
+        if a.bound[3] > 0 && far_bound(a.bound, p) > d + a.k do continue
         d = smin(d, prim_dist(a, p), a.k)
+    }
+    for u in s.adds {
+        if !u.is_sub do continue
+        if u.bound[3] > 0 && far_bound(u.bound, p) > 0.05 do continue
+        sd := -prim_dist(u, p)
+        if sd > d do d = sd
     }
     return d
 }
@@ -107,11 +159,18 @@ shape_mat :: proc(s: Shape, p: [3]f32) -> int {
     best: f32 = 1e9
     m := 0
     for a in s.adds {
+        if a.is_sub do continue
+        if a.bound[3] > 0 && far_bound(a.bound, p) > best do continue
         d := prim_dist(a, p)
         if d < best {
             best = d
             m = a.mat
         }
+    }
+    for u in s.adds {
+        if !u.is_sub do continue
+        if u.bound[3] > 0 && far_bound(u.bound, p) > 0.05 do continue
+        if -prim_dist(u, p) > best - 1e-3 do return u.mat
     }
     return m
 }

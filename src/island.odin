@@ -9,28 +9,55 @@ Ctx :: struct {
     r_flat: f32,
     rnd:    Mulberry32,
     top:    f32,
-    seed:   f32,
+    seed:   f32,       // island noise seed = rnd()*50 (matches original)
     top_y:  f32,
     bump:   f32,
     rise:   f32,
+    ripple: f32,
+    rough:  f32,
+    clear:  proc(a: f32, tall: bool) -> f32, // optional; nil => R-0.16
 }
 
 // Used only while building (single-threaded)
 _island_ctx: ^Ctx
 
-make_ctx :: proc(R, r_flat: f32, seed: u32 = 42) -> Ctx {
+hash_scene_name :: proc(name: string) -> u32 {
+    h: u32 = 2166136261
+    for b in transmute([]u8)name {
+        h ~= u32(b)
+        h *= 16777619
+    }
+    if h == 0 do h = 42
+    return h
+}
+
+make_ctx :: proc(R, r_flat: f32, seed: u32 = 42, clear: proc(a: f32, tall: bool) -> f32 = nil) -> Ctx {
     return Ctx{
         s      = shape_new(),
         R      = R,
         r_flat = r_flat,
         rnd    = mulberry32_new(seed),
         top    = 0.3,
-        seed   = f32(seed) * 0.01,
+        seed   = 0, // set inside island() via rnd()*50
         top_y  = 0,
         bump   = 0.03,
         rise   = 0,
+        ripple = 0,
+        rough  = 0.09,
+        clear  = clear,
     }
 }
+
+// Spot beyond creature reach in direction a. Returns x,z,r.
+ctx_place :: proc(c: ^Ctx, a: f32, extra: f32 = 0.2, tall: bool = true) -> (x, z, r: f32) {
+    clear_r: f32 = c.R - 0.16
+    if c.clear != nil do clear_r = c.clear(a, tall)
+    r = min(c.R - 0.16, clear_r + extra)
+    x = math.cos(a) * r
+    z = math.sin(a) * r
+    return
+}
+
 
 ctx_grow :: proc(c: ^Ctx, y: f32) {
     c.top = max(c.top, y)
@@ -39,16 +66,20 @@ ctx_grow :: proc(c: ^Ctx, y: f32) {
 ctx_height :: proc(c: ^Ctx, x, z: f32) -> f32 {
     r := math.hypot(x, z)
     e := sstep(c.r_flat, c.r_flat + 0.3, r)
-    return c.top_y +
+    h := c.top_y +
         e * (c.bump * (vnoise3(x*5 + c.seed, 1, z*5) - 0.5) * 2 +
              c.rise * sstep(c.r_flat + 0.1, c.R, r) * vnoise3(x*1.4 + c.seed, 7, z*1.4))
+    if c.ripple != 0 {
+        h += c.ripple * (0.3 + 0.7 * e) * math.sin(x * 30 + 4 * vnoise3(x * 2.5, 2, z * 2.5) + z * 7)
+    }
+    return h
 }
 
 island_under_dist :: proc(p: [3]f32) -> f32 {
     c := _island_ctx
     base := Ellipsoid{{0, c.top_y - 0.12, 0}, {0.92*c.R, 0.78*c.R, 0.92*c.R}}
     d := ellipsoid_dist(base, p)
-    d -= 0.09 * (vnoise3(p.x*4 + c.seed, p.y*4, p.z*4) - 0.5) * 2
+    d -= c.rough * (vnoise3(p.x*4 + c.seed, p.y*4, p.z*4) - 0.5) * 2
     d -= 0.04 * vnoise3(p.x*11, p.y*11, p.z*11)
     return max(d, p.y - c.top_y + 0.12)
 }
@@ -58,17 +89,22 @@ island_top_dist :: proc(p: [3]f32) -> f32 {
     c := _island_ctx
     hh: f32 = 0.16
     r  := math.hypot(p.x, p.z)
-    outline := c.R * (1 + 0.08 * (vnoise3(p.x * 1.7 + c.seed, 3, p.z * 1.7) - 0.5))
+    a  := math.atan2(p.z, p.x)
+    outline := c.R * (1 + 0.16 * (vnoise3(math.cos(a)*1.7 + c.seed, math.sin(a)*1.7 + c.seed, 3) - 0.5))
     dx := r - outline + 0.07
     hy := ctx_height(c, p.x, p.z)
     dy := abs(p.y - hy + hh) - hh + 0.07
     return math.hypot(max(dx, 0), max(dy, 0)) + min(max(dx, dy), 0) - 0.07
 }
 
-island :: proc(c: ^Ctx, m_top, m_under: int, bump: f32 = 0.03, rise: f32 = 0, top_y: f32 = 0) {
+island :: proc(c: ^Ctx, m_top, m_under: int, bump: f32 = 0.03, rise: f32 = 0, ripple: f32 = 0, rough: f32 = 0.09, top_y: f32 = 0) {
+    // Match original: seed = rnd()*50 first so the rest of the stream aligns.
+    c.seed  = mulberry32_next(&c.rnd) * 50
     c.top_y = top_y
     c.bump  = bump
     c.rise  = rise
+    c.ripple = ripple
+    c.rough  = rough
     _island_ctx = transmute(^Ctx)(rawptr(c))
 
     R := c.R
@@ -109,11 +145,10 @@ island :: proc(c: ^Ctx, m_top, m_under: int, bump: f32 = 0.03, rise: f32 = 0, to
 rocks :: proc(c: ^Ctx, mat: int, n: int, size: f32 = 0.1) {
     for i in 0..<n {
         a  := mulberry32_next(&c.rnd) * math.TAU
-        rr := 0.35 + mulberry32_next(&c.rnd) * 0.5
-        x  := math.cos(a) * rr * c.R * 0.85
-        z  := math.sin(a) * rr * c.R * 0.85
+        x, z, _ := ctx_place(c, a, 0.1 + mulberry32_next(&c.rnd)*0.7, false)
         r  := size * (0.5 + mulberry32_next(&c.rnd))
         y  := ctx_height(c, x, z)
+        // TODO: displace(ellipsoid, -0.3*r*vnoise) — needs displace prim
         shape_add_ellipsoid(&c.s, {x, y + r*0.25, z}, {r*1.3, r*0.8, r}, mat, 0.02)
     }
 }
