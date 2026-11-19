@@ -117,9 +117,9 @@ main :: proc() {
         projection = .PERSPECTIVE,
     }
 
-    // Scene sources: pre-baked .dio under assets/models/, procedural hello,
-    // or converted .psf models (static for now; skin weights loaded when present).
-    // Keys 1–5: dio / hello · 6–9: psf creatures
+    // Scene sources: pre-baked .dio, procedural hello, or model+island (Psf).
+    // Keys 1–5: dio / hello · 6–9: creature = <name>.dio island + <name>.psf model
+    // (matches three.js /?m=<name>: environment baked, model layered on top).
     Scene_Kind :: enum { Hello_Build, Dio, Psf }
     scene_name := "shrine"
     scene_kind := Scene_Kind.Dio
@@ -166,30 +166,57 @@ main :: proc() {
             }
             fmt.eprintf("Failed to load %s — falling back to hello build\n", path)
         } else if kind == .Psf {
+            // Match the three.js viewer: model stands on its pre-baked island.
+            // Original flow is `npm run island <model> <theme>` → <name>.dio, then
+            // viewer loads the .dio environment and layers the .psf on top.
+            island_n := 0
+            dio_path := fmt.tprintf("assets/models/%s.dio", name)
+            if world, ok := load_dio(dio_path); ok {
+                for s in world.surfels do append(surfels, s)
+                for f in world.free do append(free_items, f)
+                particles^ = world.particles
+                world.particles = {}
+                if len(world.palette) > 0 {
+                    glow := world.glow_pal[:] if len(world.glow_pal) > 0 else [][4]u8{}
+                    post_set_palette(post, world.palette[:], glow, world.background)
+                }
+                island_n = len(surfels^)
+                dio_world_destroy(&world)
+                fmt.printf("Island %s (%d surfels + %d free)\n", dio_path, island_n, len(free_items^))
+            } else {
+                fmt.eprintf("No island for %s (expected %s) — model only\n", name, dio_path)
+            }
+
             path := fmt.tprintf("assets/models/%s.psf", name)
             model, ok := load_psf(path)
             if ok {
                 skinned := model.skinned
+                model_start := len(surfels^)
                 for s in model.surfels do append(surfels, s)
-                // Derive a small palette from the model colours so the pixel
-                // pass has something to vote with. Background stays dark.
-                pal := make([dynamic][4]u8)
-                defer delete(pal)
-                append(&pal, [4]u8{12, 14, 18, 255}) // near-black bg
-                // sample every Nth surfel into the palette (cheap stand-in for k-means)
-                step := max(1, len(model.surfels) / 24)
-                for i := 0; i < len(model.surfels); i += step {
-                    append(&pal, model.surfels[i].color)
+                // Shade only the model slice: island light is already baked.
+                shade_model_surfels(surfels[model_start:], {0.45, 0.8, 0.35}, 0.55, 0.35)
+                // If we had no island palette, build a minimal one from the model.
+                if island_n == 0 {
+                    pal := make([dynamic][4]u8)
+                    defer delete(pal)
+                    append(&pal, [4]u8{12, 14, 18, 255})
+                    step := max(1, len(model.surfels) / 24)
+                    for i := 0; i < len(model.surfels); i += step {
+                        append(&pal, model.surfels[i].color)
+                    }
+                    post_set_palette(post, pal[:], {}, pal[0])
                 }
-                post_set_palette(post, pal[:], {}, pal[0])
-                // Apply a one-shot directional light so unbaked albedo still
-                // has form under the hard-pixel pass.
-                shade_model_surfels(surfels[:], {0.45, 0.8, 0.35}, 0.55, 0.35)
                 psf_model_destroy(&model)
-                fmt.printf("Loaded %s (%d surfels, skinned=%v)\n", path, len(surfels^), skinned)
-                // Note: joint/weight arrays were destroyed with the temporary
-                // Psf_Model. For live dual-quaternion skinning, keep the model
-                // alive and update bone dual-quats each frame (see rig.js).
+                fmt.printf("Model %s (%d surfels, skinned=%v) on island (%d env)\n",
+                    path, len(surfels^) - model_start, skinned, island_n)
+                // Joint/weight arrays were destroyed with the temporary Psf_Model.
+                // Live dual-quaternion skinning keeps the model alive and updates
+                // bone dual-quats each frame (port of src/viewer/rig.js).
+                return
+            }
+            // Island alone is still a valid scene if the .psf is missing.
+            if island_n > 0 {
+                fmt.eprintf("Failed to load model %s — showing island only\n", path)
                 return
             }
             fmt.eprintf("Failed to load %s — falling back to hello build\n", path)
@@ -403,7 +430,7 @@ main :: proc() {
         rl.DrawText(fmt.ctprintf("[Q] palette %s  [X] hard %s  [S] ss %dx%d  [E] outline %s  [D] dither %.1f",
             cfg.quant ? "on" : "off", cfg.crisp ? "on" : "off", cfg.ss, cfg.ss,
             cfg.outline ? "on" : "off", cfg.dither), 10, 58, 16, {180,180,180,255})
-        rl.DrawText("[1] hello build  [2] shrine  [3] lighthouse  [4] caravan  [5] hello.dio", 10, 78, 16, {160,160,160,255})
+        rl.DrawText("[1] hello  [2-5] scenes  [6] minotaur  [7] hyena  [8] toad  [9] dragon  (island+model)", 10, 78, 16, {160,160,160,255})
         rl.EndDrawing()
     }
 }
