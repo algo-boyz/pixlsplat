@@ -63,6 +63,65 @@ ctx_grow :: proc(c: ^Ctx, y: f32) {
     c.top = max(c.top, y)
 }
 
+
+// ---- displaced ellipsoids (port of JS displace(ellipsoid, noise)) ----------
+// Sequential slots for one build; each slot has a fixed proc pointer.
+Displaced_Ellipsoid :: struct {
+    c:     [3]f32,
+    radii: [3]f32,
+    amp:   f32,
+    freq:  f32,
+}
+_disp_ellipsoids: [16]Displaced_Ellipsoid
+_disp_count: int
+
+_disp_eval :: proc(i: int, p: [3]f32) -> f32 {
+    de := _disp_ellipsoids[i]
+    d := ellipsoid_dist(Ellipsoid{de.c, de.radii}, p)
+    d += de.amp * vnoise3(p.x*de.freq, p.y*de.freq, p.z*de.freq)
+    return d
+}
+_disp_dist_0  :: proc(p: [3]f32) -> f32 { return _disp_eval(0, p) }
+_disp_dist_1  :: proc(p: [3]f32) -> f32 { return _disp_eval(1, p) }
+_disp_dist_2  :: proc(p: [3]f32) -> f32 { return _disp_eval(2, p) }
+_disp_dist_3  :: proc(p: [3]f32) -> f32 { return _disp_eval(3, p) }
+_disp_dist_4  :: proc(p: [3]f32) -> f32 { return _disp_eval(4, p) }
+_disp_dist_5  :: proc(p: [3]f32) -> f32 { return _disp_eval(5, p) }
+_disp_dist_6  :: proc(p: [3]f32) -> f32 { return _disp_eval(6, p) }
+_disp_dist_7  :: proc(p: [3]f32) -> f32 { return _disp_eval(7, p) }
+_disp_dist_8  :: proc(p: [3]f32) -> f32 { return _disp_eval(8, p) }
+_disp_dist_9  :: proc(p: [3]f32) -> f32 { return _disp_eval(9, p) }
+_disp_dist_10 :: proc(p: [3]f32) -> f32 { return _disp_eval(10, p) }
+_disp_dist_11 :: proc(p: [3]f32) -> f32 { return _disp_eval(11, p) }
+_disp_dist_12 :: proc(p: [3]f32) -> f32 { return _disp_eval(12, p) }
+_disp_dist_13 :: proc(p: [3]f32) -> f32 { return _disp_eval(13, p) }
+_disp_dist_14 :: proc(p: [3]f32) -> f32 { return _disp_eval(14, p) }
+_disp_dist_15 :: proc(p: [3]f32) -> f32 { return _disp_eval(15, p) }
+
+_disp_fns := [16]proc(p: [3]f32) -> f32{
+    _disp_dist_0, _disp_dist_1, _disp_dist_2, _disp_dist_3,
+    _disp_dist_4, _disp_dist_5, _disp_dist_6, _disp_dist_7,
+    _disp_dist_8, _disp_dist_9, _disp_dist_10, _disp_dist_11,
+    _disp_dist_12, _disp_dist_13, _disp_dist_14, _disp_dist_15,
+}
+
+reset_displaced_ellipsoids :: proc() { _disp_count = 0 }
+
+add_displaced_ellipsoid :: proc(
+    s: ^Shape,
+    c: [3]f32,
+    radii: [3]f32,
+    amp, freq: f32,
+    mat: int,
+    k: f32 = 0,
+) {
+    assert(_disp_count < 16)
+    i := _disp_count
+    _disp_ellipsoids[i] = {c, radii, amp, freq}
+    _disp_count += 1
+    shape_add_func(s, _disp_fns[i], mat, k)
+}
+
 ctx_height :: proc(c: ^Ctx, x, z: f32) -> f32 {
     r := math.hypot(x, z)
     e := sstep(c.r_flat, c.r_flat + 0.3, r)
@@ -98,6 +157,7 @@ island_top_dist :: proc(p: [3]f32) -> f32 {
 }
 
 island :: proc(c: ^Ctx, m_top, m_under: int, bump: f32 = 0.03, rise: f32 = 0, ripple: f32 = 0, rough: f32 = 0.09, top_y: f32 = 0) {
+    reset_displaced_ellipsoids()
     // Match original: seed = rnd()*50 first so the rest of the stream aligns.
     c.seed  = mulberry32_next(&c.rnd) * 50
     c.top_y = top_y
@@ -138,8 +198,11 @@ island :: proc(c: ^Ctx, m_top, m_under: int, bump: f32 = 0.03, rise: f32 = 0, ri
         z  := math.sin(a) * rr
         y  := top_y - 0.75 + mulberry32_next(&c.rnd)*0.9
         q  := 0.05 + mulberry32_next(&c.rnd)*0.09
-        shape_add_ellipsoid(&c.s, {x, y, z}, {q*1.2, q*0.85, q}, m_under)
+        shape_bound(&c.s, x, y, z, q * 2)
+        // displace(ellipsoid, -0.03 * vnoise3(*12))
+        add_displaced_ellipsoid(&c.s, {x, y, z}, {q*1.2, q*0.85, q}, -0.03, 12, m_under, 0)
     }
+    shape_bound_clear(&c.s)
 }
 
 rocks :: proc(c: ^Ctx, mat: int, n: int, size: f32 = 0.1) {
@@ -148,9 +211,10 @@ rocks :: proc(c: ^Ctx, mat: int, n: int, size: f32 = 0.1) {
         x, z, _ := ctx_place(c, a, 0.1 + mulberry32_next(&c.rnd)*0.7, false)
         r  := size * (0.5 + mulberry32_next(&c.rnd))
         y  := ctx_height(c, x, z)
-        // TODO: displace(ellipsoid, -0.3*r*vnoise) — needs displace prim
-        shape_add_ellipsoid(&c.s, {x, y + r*0.25, z}, {r*1.3, r*0.8, r}, mat, 0.02)
+        shape_bound(&c.s, x, y, z, r * 1.8)
+        add_displaced_ellipsoid(&c.s, {x, y + r*0.25, z}, {r*1.3, r*0.8, r}, -0.3*r, 11, mat, 0.02)
     }
+    shape_bound_clear(&c.s)
 }
 // What a material's paint callback returns for one surfel.
 //   c:        the surface colour, 0..1

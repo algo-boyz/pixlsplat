@@ -155,13 +155,56 @@ draw_billboard_disc :: proc(pos, cam_right, cam_up: [3]f32, radius: f32, col: rl
     draw_disc_frame(pos, cam_right, cam_up, radius, col, two_sided = false)
 }
 
-draw_oriented_blade :: proc(pos, right, up: [3]f32, half_w, half_h: f32, col: rl.Color) {
-    p0 := pos + (-right)*half_w + (-up)*half_h
-    p1 := pos + ( right)*half_w + (-up)*half_h
-    p2 := pos + ( right)*half_w + ( up)*half_h
-    p3 := pos + (-right)*half_w + ( up)*half_h
-    rl.DrawTriangle3D(p0, p1, p2, col)
-    rl.DrawTriangle3D(p0, p2, p3, col)
-    rl.DrawTriangle3D(p0, p2, p1, col)
-    rl.DrawTriangle3D(p0, p3, p2, col)
+// Stretched hard ellipse: original free blades are one Gaussian each, drawn
+// as a hard ellipse of radius 1.5 sigma (not a rectangle / triangle).
+draw_oriented_ellipse :: proc(pos, axis_x, axis_y: [3]f32, rx, ry: f32, col: rl.Color, two_sided := true) {
+    // axis_x/axis_y should be unit; corners of the ellipse bounding quad
+    p0 := pos + (-axis_x)*rx + (-axis_y)*ry
+    p1 := pos + ( axis_x)*rx + (-axis_y)*ry
+    p2 := pos + ( axis_x)*rx + ( axis_y)*ry
+    p3 := pos + (-axis_x)*rx + ( axis_y)*ry
+
+    rlgl.SetTexture(splat_soft ? disc_soft_tex.id : disc_hard_tex.id)
+    rlgl.Begin(rlgl.QUADS)
+    rlgl.Color4ub(col.r, col.g, col.b, col.a)
+    rlgl.TexCoord2f(0, 0); rlgl.Vertex3f(p0.x, p0.y, p0.z)
+    rlgl.TexCoord2f(1, 0); rlgl.Vertex3f(p1.x, p1.y, p1.z)
+    rlgl.TexCoord2f(1, 1); rlgl.Vertex3f(p2.x, p2.y, p2.z)
+    rlgl.TexCoord2f(0, 1); rlgl.Vertex3f(p3.x, p3.y, p3.z)
+    if two_sided {
+        rlgl.TexCoord2f(0, 0); rlgl.Vertex3f(p0.x, p0.y, p0.z)
+        rlgl.TexCoord2f(0, 1); rlgl.Vertex3f(p3.x, p3.y, p3.z)
+        rlgl.TexCoord2f(1, 1); rlgl.Vertex3f(p2.x, p2.y, p2.z)
+        rlgl.TexCoord2f(1, 0); rlgl.Vertex3f(p1.x, p1.y, p1.z)
+    }
+    rlgl.End()
+    rlgl.SetTexture(0)
 }
+
+// Free-splat blade: hard ellipse along right/up with half-extents half_w/half_h.
+// Matches original 1.5-sigma hard edge of a stretched Gaussian.
+draw_oriented_blade :: proc(pos, right, up: [3]f32, half_w, half_h: f32, col: rl.Color) {
+    ax := right
+    if linalg.vector_length(ax) > 1e-6 do ax = linalg.normalize(ax)
+    ay := up
+    if linalg.vector_length(ay) > 1e-6 do ay = linalg.normalize(ay)
+    draw_oriented_ellipse(pos, ax, ay, half_w, half_h, col, two_sided = true)
+}
+
+// Fog: fade colour toward a dark background between start and end distance.
+// Matches shade.js: mix(col, vec3(0.03,0.035,0.05), 0.75 * smoothstep(fog.x, fog.y, dist))
+FOG_START :: f32(3)
+FOG_END   :: f32(6)
+FOG_COL   :: [3]f32{0.03, 0.035, 0.05}
+
+apply_fog_color :: proc(col: rl.Color, dist: f32, emissive := false) -> rl.Color {
+    if emissive do return col
+    t := math.clamp((dist - FOG_START) / (FOG_END - FOG_START), 0, 1)
+    t = t * t * (3 - 2 * t) // smoothstep
+    k := 0.75 * t
+    r := f32(col.r)/255 * (1 - k) + FOG_COL[0] * k
+    g := f32(col.g)/255 * (1 - k) + FOG_COL[1] * k
+    b := f32(col.b)/255 * (1 - k) + FOG_COL[2] * k
+    return {u8(math.clamp(r*255, 0, 255)), u8(math.clamp(g*255, 0, 255)), u8(math.clamp(b*255, 0, 255)), col.a}
+}
+

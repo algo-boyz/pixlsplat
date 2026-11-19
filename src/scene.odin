@@ -3,7 +3,7 @@ package pixlsplat
 import "core:math"
 import "core:math/linalg"
 
-Free_Kind :: enum { Lit, Emissive, Sway, Glow }
+Free_Kind :: enum { Lit, Emissive, Sway, Glow, Litter }
 
 Free_Splat :: struct {
     pos:   [3]f32,
@@ -26,6 +26,18 @@ make_free :: proc(rnd: Mulberry32) -> Free_List {
     }
 }
 
+// shade.js upNormal path multiplies free blade/litter albedo by 0.74.
+LEAF_UP_FACTOR :: f32(0.74)
+
+_dim_u8 :: proc(c: [4]u8, k: f32) -> [4]u8 {
+    return {
+        u8(math.clamp(f32(c[0]) * k, 0, 255)),
+        u8(math.clamp(f32(c[1]) * k, 0, 255)),
+        u8(math.clamp(f32(c[2]) * k, 0, 255)),
+        c[3],
+    }
+}
+
 free_blade :: proc(f: ^Free_List, x, y, z, h, w: f32, dark, light: [4]u8) {
     a    := mulberry32_next(&f.rnd) * math.TAU
     lean := 0.15 + mulberry32_next(&f.rnd) * 0.3
@@ -36,12 +48,17 @@ free_blade :: proc(f: ^Free_List, x, y, z, h, w: f32, dark, light: [4]u8) {
         right = linalg.normalize(linalg.cross(dir, {1,0,0}))
     }
 
+    // Lit as if facing up (leaf:true / upNormal), then darkened
+    dk := _dim_u8(dark, LEAF_UP_FACTOR)
+    lt := _dim_u8(light, LEAF_UP_FACTOR)
+
     append(&f.items, Free_Splat{
         pos   = {x + dir.x*h*0.25, y + h*0.25, z + dir.z*h*0.25},
+        // scale: half-extents of the hard ellipse (1.5-sigma of stretched Gaussian)
         scale = {w, h*0.3, w},
         right = right,
         up    = dir,
-        color = dark,
+        color = dk,
         kind  = .Sway,
         alpha = 1,
     })
@@ -50,7 +67,7 @@ free_blade :: proc(f: ^Free_List, x, y, z, h, w: f32, dark, light: [4]u8) {
         scale = {w*0.8, h*0.3, w*0.8},
         right = right,
         up    = dir,
-        color = light,
+        color = lt,
         kind  = .Sway,
         alpha = 1,
     })
@@ -109,6 +126,40 @@ free_dots :: proc(
             up    = {0,1,0},
             color = col,
             kind  = .Lit,
+            alpha = 1,
+        })
+        i += 1
+    }
+}
+
+
+// Flat leaves / petals on the ground (original free.litter).
+free_litter :: proc(
+    f: ^Free_List,
+    c: ^Ctx,
+    n: int,
+    colors: [][4]u8,
+    size: f32 = 0.022,
+    r: f32 = 1.2,
+) {
+    for i, tries := 0, 0; i < n && tries < n * 60; tries += 1 {
+        a  := mulberry32_next(&f.rnd) * math.TAU
+        rr := math.sqrt(mulberry32_next(&f.rnd)) * r
+        x  := math.cos(a) * rr
+        z  := math.sin(a) * rr
+        y  := ctx_height(c, x, z)
+        if shape_dist(c.s, {x, y + 0.06, z}) < 0.03 {
+            continue
+        }
+        col := _dim_u8(colors[int(mulberry32_next(&f.rnd) * f32(len(colors))) % len(colors)], LEAF_UP_FACTOR)
+        // Thin axis up: lying flat. scale = (size, size*0.7, 0.004) in original.
+        append(&f.items, Free_Splat{
+            pos   = {x, y + 0.012, z},
+            scale = {size, size * 0.7, 0.004},
+            right = {1, 0, 0},
+            up    = {0, 0, 1}, // thin axis is local Z after FLAT quat; we draw in XZ plane
+            color = col,
+            kind  = .Litter,
             alpha = 1,
         })
         i += 1

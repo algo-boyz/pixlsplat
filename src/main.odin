@@ -20,7 +20,7 @@ Sort_Item :: struct {
 
 // The colour is already lit (bake() in island.odin), so it is drawn as is.
 // Emissive surfels (the lantern) are boosted like the original's shader does.
-draw_surfel :: proc(s: Surfel, soft: bool) {
+draw_surfel :: proc(s: Surfel, soft: bool, dist: f32 = 0) {
     col := rl.Color{s.color[0], s.color[1], s.color[2], 255}
     if s.emissive {
         col = {
@@ -29,25 +29,82 @@ draw_surfel :: proc(s: Surfel, soft: bool) {
             u8(min(f32(s.color[2]) * 1.15, 255)),
             255,
         }
+    } else {
+        col = apply_fog_color(col, dist)
     }
     draw_oriented_disc(s.pos, s.normal, splat_radius(SPLAT_R, soft), col)
 }
 
-// Everything except Sway blades, which are drawn as opaque triangles.
-draw_free :: proc(fs: Free_Splat, cam_right, cam_up: [3]f32, soft: bool) {
+// Free splat draw. Sway blades are handled in the blade pass with optional sway.
+draw_free :: proc(fs: Free_Splat, cam_right, cam_up: [3]f32, soft: bool, dist: f32 = 0) {
     switch fs.kind {
     case .Glow:
-        // translucent halo: alpha is the splat's opacity, sigma is its scale
+        // Three nested translucent discs (alphas 0.14/0.3/0.55), through haze/fog.
         a := u8(math.clamp(fs.alpha, 0, 1) * 255 + 0.5)
         r := fs.scale.x * (SPLAT_STD_SOFT if soft else SPLAT_STD_DEV)
-        draw_billboard_disc(fs.pos, cam_right, cam_up, r, {fs.color[0], fs.color[1], fs.color[2], a})
+        col := apply_fog_color({fs.color[0], fs.color[1], fs.color[2], a}, dist, emissive = true)
+        // Keep glow alpha; fog only shifts RGB slightly for distant halos is skipped (emissive)
+        draw_billboard_disc(fs.pos, cam_right, cam_up, r, {col.r, col.g, col.b, a})
     case .Lit, .Emissive:
-        draw_oriented_disc(fs.pos, fs.up, splat_radius(fs.scale.x * 2, soft),
-            {fs.color[0], fs.color[1], fs.color[2], 255})
+        col := apply_fog_color(
+            {fs.color[0], fs.color[1], fs.color[2], 255},
+            dist,
+            emissive = fs.kind == .Emissive,
+        )
+        draw_oriented_disc(fs.pos, fs.up, splat_radius(fs.scale.x * 2, soft), col)
+    case .Litter:
+        // Flat on ground: ellipse in the XZ plane (right × world-up cross ≈ forward)
+        col := apply_fog_color({fs.color[0], fs.color[1], fs.color[2], 255}, dist)
+        right := fs.right
+        if linalg.vector_length(right) < 1e-5 do right = {1, 0, 0}
+        // second axis along ground perpendicular to right
+        fwd := linalg.normalize(linalg.cross({0, 1, 0}, right))
+        if linalg.vector_length(fwd) < 1e-5 do fwd = {0, 0, 1}
+        draw_oriented_ellipse(fs.pos, right, fwd, fs.scale.x, fs.scale.y, col)
     case .Sway:
         // drawn in the blade pass
     }
 }
+
+// Time-based sway offset matching particles.js sway mode.
+sway_offset :: proc(p: [3]f32, t: f32) -> [3]f32 {
+    return {
+        0.016 * math.sin(t * 1.6 + p.x * 5.0 + p.z * 3.0),
+        0,
+        0.011 * math.cos(t * 1.3 + p.z * 4.0 - p.x * 2.0),
+    }
+}
+
+// Simple blink firefly particle (hello scene).
+Blink_Particle :: struct {
+    base:  [3]f32,
+    phase: f32,
+    color: [4]u8,
+}
+
+draw_blink_particle :: proc(bp: Blink_Particle, t: f32, cam_right, cam_up: [3]f32, soft: bool, cam_pos: [3]f32) {
+    // drift a little
+    p := bp.base + [3]f32{
+        0.08 * math.sin(t * 0.7 + bp.phase),
+        0.05 * math.sin(t * 1.1 + bp.phase * 1.7),
+        0.08 * math.cos(t * 0.55 + bp.phase * 0.9),
+    }
+    // blink envelope
+    pulse := 0.5 + 0.5 * math.sin(t * 3.2 + bp.phase * 5)
+    pulse = pulse * pulse
+    if pulse < 0.08 do return
+    a := u8(math.clamp(pulse, 0, 1) * 220)
+    dist := linalg.vector_length(p - cam_pos)
+    col := apply_fog_color({bp.color[0], bp.color[1], bp.color[2], a}, dist, emissive = true)
+    r := 0.018 * (SPLAT_STD_SOFT if soft else SPLAT_STD_DEV)
+    draw_billboard_disc(p, cam_right, cam_up, r, {col.r, col.g, col.b, a})
+    // soft halo
+    if pulse > 0.35 {
+        ha := u8(f32(a) * 0.35)
+        draw_billboard_disc(p, cam_right, cam_up, r * 2.4, {col.r, col.g, col.b, ha})
+    }
+}
+
 
 main :: proc() {
     rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
@@ -95,6 +152,24 @@ main :: proc() {
         delete(free.items)
     }
     fmt.printf("Generated %d SDF surfels + %d free splats\n", len(surfels), len(free.items))
+
+    // Fireflies: blink mode with halos (hello scene particles)
+    blinks := make([dynamic]Blink_Particle)
+    defer delete(blinks)
+    {
+        rng := mulberry32_new(99)
+        cols := [2][4]u8{{255, 207, 90, 255}, {255, 241, 192, 255}}
+        for i in 0..<18 {
+            bx := (mulberry32_next(&rng) * 2 - 1) * 1.1
+            by := 0.3 + (mulberry32_next(&rng) * 2 - 1) * 0.5
+            bz := (mulberry32_next(&rng) * 2 - 1) * 1.1
+            append(&blinks, Blink_Particle{
+                base  = {bx, by, bz},
+                phase = mulberry32_next(&rng) * math.TAU,
+                color = cols[i & 1],
+            })
+        }
+    }
 
     order: [dynamic]Sort_Item
     defer delete(order)
@@ -150,24 +225,41 @@ main :: proc() {
         rl.BeginShaderMode(splat_shader)
         rl.BeginBlendMode(.ALPHA_PREMULTIPLY)
 
-        // grass blades: opaque triangles in both modes
+        t := f32(rl.GetTime())
+
+        // grass blades: hard ellipses; sway with time
         for fs in free.items {
             if fs.kind == .Sway {
-                draw_oriented_blade(fs.pos, fs.right, fs.up, fs.scale.x, fs.scale.y,
-                    {fs.color[0], fs.color[1], fs.color[2], 255})
+                off := sway_offset(fs.pos, t)
+                pos := fs.pos + off
+                dist := linalg.vector_length(pos - camera.position)
+                col := apply_fog_color({fs.color[0], fs.color[1], fs.color[2], 255}, dist)
+                draw_oriented_blade(pos, fs.right, fs.up, fs.scale.x, fs.scale.y, col)
             }
         }
 
         if !soft {
             // hard pixels: opaque discs write depth, then translucent light is
             // blended over them without writing depth
-            for s in surfels do draw_surfel(s, false)
+            for s in surfels {
+                dist := linalg.vector_length(s.pos - camera.position)
+                draw_surfel(s, false, dist)
+            }
             for fs in free.items {
-                if fs.kind == .Lit || fs.kind == .Emissive do draw_free(fs, right, cup, false)
+                if fs.kind == .Lit || fs.kind == .Emissive || fs.kind == .Litter {
+                    dist := linalg.vector_length(fs.pos - camera.position)
+                    draw_free(fs, right, cup, false, dist)
+                }
             }
             rlgl.DisableDepthMask()
             for fs in free.items {
-                if fs.kind == .Glow do draw_free(fs, right, cup, false)
+                if fs.kind == .Glow {
+                    dist := linalg.vector_length(fs.pos - camera.position)
+                    draw_free(fs, right, cup, false, dist)
+                }
+            }
+            for bp in blinks {
+                draw_blink_particle(bp, t, right, cup, false, camera.position)
             }
             rlgl.EnableDepthMask()
         } else {
@@ -185,10 +277,17 @@ main :: proc() {
             rlgl.DisableDepthMask()
             for it in order {
                 if it.free {
-                    draw_free(free.items[it.i], right, cup, true)
+                    fs := free.items[it.i]
+                    dist := linalg.vector_length(fs.pos - camera.position)
+                    draw_free(fs, right, cup, true, dist)
                 } else {
-                    draw_surfel(surfels[it.i], true)
+                    s := surfels[it.i]
+                    dist := linalg.vector_length(s.pos - camera.position)
+                    draw_surfel(s, true, dist)
                 }
+            }
+            for bp in blinks {
+                draw_blink_particle(bp, t, right, cup, true, camera.position)
             }
             rlgl.EnableDepthMask()
         }
