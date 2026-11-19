@@ -47,8 +47,7 @@ build_hello :: proc() -> (surfels: [dynamic]Surfel, free: Free_List) {
         {-0.22, 0.85,  0.12, 0.28},
         { 0.28, 0.82, -0.10, 0.26},
     }
-    // Original: displace(ellipsoid, -0.06*(vnoise3(*9)-0.5))
-    // Approximate with amp=-0.06 on vnoise (center of the -0.06*(v-0.5) range is similar detail)
+    // displace(ellipsoid, -0.06 * (vnoise3(p * 9) - 0.5)), exactly as hello.js
     for b in blobs {
         add_displaced_ellipsoid(
             &c.s,
@@ -58,6 +57,7 @@ build_hello :: proc() -> (surfels: [dynamic]Surfel, free: Free_List) {
             9,
             M_LEAVES,
             0.08,
+            bias = 0.5,
         )
     }
     ctx_grow(&c, 1.45)

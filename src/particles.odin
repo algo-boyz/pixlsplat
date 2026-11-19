@@ -22,8 +22,12 @@ Particle :: struct {
     base:   [3]f32,
     r:      [3]f32,   // stable random seed (0..1)
     color:  [4]u8,
-    scale:  f32,      // base radius
+    scale:  f32,      // base std dev, used when `sigma` is zero
     alpha0: f32,
+    // Gaussian shape (world.js `put`): std dev along three local axes, and those
+    // axes in world space. Zero sigma = isotropic `scale`; zero axes = identity.
+    sigma:  [3]f32,
+    axes:   [3][3]f32,
     // optional effect params
     center: [3]f32,   // beam / leaf column centre
     v:      [3]f32,   // x=radius or unused, y=height
@@ -31,6 +35,7 @@ Particle :: struct {
     pos:    [3]f32,
     alpha:  f32,
     scale_mul: f32,
+    spin:   f32,      // rotation about Y (the lighthouse beam)
     alive:  bool,
 }
 
@@ -52,7 +57,45 @@ particle_add :: proc(ps: ^Particle_System, p: Particle) {
     p.alpha = p.alpha0
     p.scale_mul = 1
     p.alive = true
+    if p.sigma == ([3]f32{}) do p.sigma = {p.scale, p.scale, p.scale}
+    if p.axes[0] == ([3]f32{}) && p.axes[1] == ([3]f32{}) {
+        p.axes = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}
+    }
     append(&ps.items, p)
+}
+
+// World-space axes of a splat orientation (quaternion x, y, z, w). A zero
+// quaternion means no rotation.
+axes_from_quat :: proc(q: [4]f32) -> [3][3]f32 {
+    if q == ([4]f32{}) do return {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}
+    r, u, n := quat_axes(q)
+    return {r, u, n}
+}
+
+// One splat of a particle effect: position, std dev per axis, orientation.
+// `r` is the stable random seed the motion uses; a particle and its halo share
+// one so they move together.
+particle_put :: proc(
+    ps: ^Particle_System,
+    mode: Particle_Mode,
+    pos, sigma: [3]f32,
+    rot: [4]f32,
+    alpha: f32,
+    color: [4]u8,
+    center, v, r: [3]f32,
+) {
+    particle_add(ps, Particle{
+        mode   = mode,
+        base   = pos,
+        r      = r,
+        color  = color,
+        scale  = sigma[0],
+        alpha0 = alpha,
+        center = center,
+        v      = v,
+        sigma  = sigma,
+        axes   = axes_from_quat(rot),
+    })
 }
 
 // Emit n particles of a mode in a box around center with given spread.
@@ -121,6 +164,11 @@ shafts_emit :: proc(
             pos := b.to - dir * t + side * w
             col := colors[bi % len(colors)]
             a := alpha * (0.45 + 0.55 * u)
+            // (thick, len/n*1.1, thick) along the beam, as in scene-kit.js shafts()
+            ay := dir
+            ax := linalg.normalize(linalg.cross(ay, [3]f32{0, 0, 1}))
+            if linalg.vector_length(ax) < 1e-4 || math.is_nan(ax.x) do ax = {1, 0, 0}
+            az := linalg.cross(ax, ay)
             particle_add(ps, Particle{
                 mode = .Ray,
                 base = pos,
@@ -128,7 +176,8 @@ shafts_emit :: proc(
                 color = col,
                 scale = thick,
                 alpha0 = a,
-                v = {0, length / f32(n) * 1.1, 0}, // stretch along beam stored in v.y as half-height-ish
+                sigma = {thick, length / f32(n) * 1.1, thick},
+                axes = {ax, ay, az},
             })
         }
     }
@@ -140,6 +189,7 @@ particle_update :: proc(ps: ^Particle_System, t: f32) {
         pos := p.base
         a: f32 = 1
         sm: f32 = 1
+        spin: f32 = 0
         switch p.mode {
         case .Rise:
             k := fract(t * 0.22 * (0.6 + r.x) + r.y)
@@ -189,6 +239,7 @@ particle_update :: proc(ps: ^Particle_System, t: f32) {
             cs, sn := math.cos(ang), math.sin(ang)
             d := pos - p.center
             pos = p.center + [3]f32{cs*d.x + sn*d.z, d.y, -sn*d.x + cs*d.z}
+            spin = ang   // the bar turns with it
         case .Fog:
             pos.x += 0.25 * math.sin(t * 0.12 + r.x * 40)
             pos.z += 0.25 * math.cos(t * 0.1 + r.y * 40)
@@ -210,30 +261,73 @@ particle_update :: proc(ps: ^Particle_System, t: f32) {
         p.pos = pos
         p.alpha = math.clamp(p.alpha0 * a, 0, 1)
         p.scale_mul = sm
+        p.spin = spin
         p.alive = p.alpha > 0.02
     }
 }
 
+// Every particle is a 3D Gaussian: std dev `sigma` along its local axes. It is
+// drawn the way a splat renderer does, as the ellipse its covariance projects to
+// on the screen plane, so isotropic dots, flat mist discs, tall light shafts and
+// the turning lighthouse beam all go through one path.
+//   px_scale: render-target pixels per world unit at distance 1 (height / 2 tan(fov/2)).
+//   Spark adds 0.3 px^2 to every splat's covariance so sub-pixel ones stay
+//   visible; the same is done here.
 particle_draw :: proc(
     ps: ^Particle_System,
     cam_right, cam_up, cam_pos: [3]f32,
     soft: bool,
+    px_scale: f32 = 0,
 ) {
+    k := SPLAT_STD_SOFT if soft else SPLAT_STD_DEV
     for p in ps.items {
         if !p.alive do continue
         dist := linalg.vector_length(p.pos - cam_pos)
         a := u8(math.clamp(p.alpha, 0, 1) * 255 + 0.5)
         col := apply_fog_color({p.color[0], p.color[1], p.color[2], a}, dist, emissive = true)
-        r := p.scale * p.scale_mul * (SPLAT_STD_SOFT if soft else SPLAT_STD_DEV)
-        // Ray/shaft: stretch along beam direction slightly
-        if p.mode == .Ray || p.mode == .Shaft {
-            dir := linalg.normalize([3]f32{-SUN.x, -SUN.y, -SUN.z})
-            side := linalg.normalize(linalg.cross(dir, {0, 1, 0}))
-            if linalg.vector_length(side) < 1e-4 do side = {1, 0, 0}
-            half_len := (p.v.y if p.v.y > 0 else r * 2) * 0.5
-            draw_oriented_ellipse(p.pos, side, dir, r, half_len, {col.r, col.g, col.b, a}, two_sided = false)
-        } else {
-            draw_billboard_disc(p.pos, cam_right, cam_up, r, {col.r, col.g, col.b, a})
+
+        sg   := p.sigma * p.scale_mul
+        axes := p.axes
+        if p.spin != 0 {
+            cs, sn := math.cos(p.spin), math.sin(p.spin)
+            for i in 0..<3 {
+                x, z := axes[i].x, axes[i].z
+                axes[i].x =  cs * x + sn * z
+                axes[i].z = -sn * x + cs * z
+            }
         }
+
+        // covariance on the screen plane: sum of sigma_i^2 * (axis_i projected)^2
+        cxx, cxy, cyy: f32
+        for i in 0..<3 {
+            u := linalg.dot(axes[i], cam_right) * sg[i]
+            v := linalg.dot(axes[i], cam_up) * sg[i]
+            cxx += u * u
+            cxy += u * v
+            cyy += v * v
+        }
+        if px_scale > 0 {
+            ppu  := px_scale / max(dist, 1e-3)
+            blur := 0.3 / (ppu * ppu)
+            cxx += blur
+            cyy += blur
+        }
+        tr   := cxx + cyy
+        det  := cxx * cyy - cxy * cxy
+        disc := math.sqrt(max(tr * tr * 0.25 - det, 0))
+        l1   := tr * 0.5 + disc
+        l2   := max(tr * 0.5 - disc, 1e-12)
+
+        v1 := [2]f32{1, 0}
+        if abs(cxy) > 1e-12 {
+            v1 = {l1 - cyy, cxy}
+            v1 /= math.hypot(v1[0], v1[1])
+        } else if cyy > cxx {
+            v1 = {0, 1}
+        }
+        e1 := cam_right * v1[0] + cam_up * v1[1]
+        e2 := cam_right * -v1[1] + cam_up * v1[0]
+        draw_oriented_ellipse(p.pos, e1, e2, k * math.sqrt(l1), k * math.sqrt(l2),
+            {col.r, col.g, col.b, a}, two_sided = false)
     }
 }

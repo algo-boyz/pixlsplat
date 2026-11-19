@@ -2,6 +2,7 @@ package pixlsplat
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:math"
 import "core:math/linalg"
 import "core:os"
 
@@ -24,6 +25,7 @@ Dio_Meta_Particle :: struct {
     n:       int,
     halo:    bool,
     still:   bool,
+    alpha:   f32,
     colors:  []string,
     center:  [3]f32,
     spread:  [3]f32,
@@ -43,6 +45,8 @@ Dio_Meta :: struct {
     bottom:     f32,
     baked:      bool,
     scene:      bool,
+    elev:       f32,
+    dither:     f32,   // -1 when the scene does not set one (see load_dio)
     palette:    []string,
     glowPalette: []string `json:"glowPalette"`,
     background: string,
@@ -119,6 +123,7 @@ load_dio :: proc(path: string, ground_y: f32 = 0) -> (world: Dio_World, ok: bool
     if 8+json_len > len(data) do return {}, false
 
     meta: Dio_Meta
+    meta.dither = -1
     if jerr := json.unmarshal(data[8:8+json_len], &meta); jerr != nil {
         fmt.eprintf("dio: json parse failed: %v\n", jerr)
         return {}, false
@@ -193,62 +198,100 @@ load_dio :: proc(path: string, ground_y: f32 = 0) -> (world: Dio_World, ok: bool
         world.background = world.palette[0]
     }
 
-    // particles from meta
+    // particles from meta (port of the particle block in viewer/world.js)
     world.particles = particle_system_make()
-    seed: u32 = 99
-    for ps, pi in meta.particles {
-        mode := particle_mode_from_string(ps.mode if !ps.still else "twinkle")
+    lcg: u32 = 99                   // world.js's rnd(): same seed and generator
+    seeds := mulberry32_new(1234)   // stable per-particle motion seeds
+    top := meta.top
+    for ps in meta.particles {
+        mode := particle_mode_from_string("twinkle" if ps.still else ps.mode)
         cols := make([dynamic][4]u8)
         defer delete(cols)
         for h in ps.colors do append(&cols, hex_to_u8(h))
         if len(cols) == 0 do append(&cols, [4]u8{255, 255, 255, 255})
+        pick :: proc(cols: [][4]u8, lcg: ^u32) -> [4]u8 {
+            return cols[int(lcg_next(lcg) * f32(len(cols))) % len(cols)]
+        }
 
+        c      := ps.center
+        alpha  := ps.alpha if ps.alpha > 0 else 0.95
+        vy     := ps.spread[1] if ps.spread != ([3]f32{}) else (ps.height if ps.height > 0 else 0.6)
+        centre := [3]f32{c[0], c[1] + ground_y, c[2]}      // what the motion orbits
+        v      := [3]f32{meta.R, vy, 0}
+        ident  := [4]f32{}
+        tilt   := [4]f32{0, 0, math.sin(f32(-0.15)), math.cos(f32(-0.15))}   // Euler z = -0.3
+
+        // explicit shapes, relative to the centre (lighthouse beam, shrine rays)
         if len(ps.splats) > 0 {
-            // explicit shaft/ray geometry
-            for s in ps.splats {
-                if len(s) < 7 do continue
-                particle_add(&world.particles, Particle{
-                    mode = mode,
-                    base = {s[0], s[1] + ground_y, s[2]},
-                    r = {0.2, 0.3, 0.7},
-                    color = cols[0],
-                    scale = s[3],
-                    alpha0 = s[6],
-                    v = {0, s[4], 0},
-                })
-                seed = seed * 1664525 + 1013904223
+            for b in ps.splats {
+                if len(b) < 7 do continue
+                rot := ident
+                if len(b) >= 11 do rot = {b[7], b[8], b[9], b[10]}
+                r := [3]f32{mulberry32_next(&seeds), mulberry32_next(&seeds), mulberry32_next(&seeds)}
+                particle_put(
+                    &world.particles, mode,
+                    {c[0] + b[0], c[1] + b[1] + ground_y, c[2] + b[2]},
+                    {b[3], b[4], b[5]}, rot, b[6], pick(cols[:], &lcg), centre, v, r,
+                )
             }
             continue
         }
 
-        n_emit := ps.n if ps.n > 0 else 16
-        center := ps.center
-        center.y += ground_y
-        spread := ps.spread
-        if spread == {} do spread = {1, 0.5, 1}
-        height := ps.height if ps.height > 0 else 1.0
-
-        if len(ps.origins) > 0 {
+        // where the particles start
+        spots := make([dynamic][3]f32)
+        defer delete(spots)
+        if len(ps.points) > 0 {
+            for p in ps.points do append(&spots, p)
+        } else if len(ps.origins) > 0 {
             for o in ps.origins {
-                oc := o
-                oc.y += ground_y
-                particle_emit_box(
-                    &world.particles, mode, n_emit,
-                    center = oc, spread = {0.05, 0.02, 0.05},
-                    colors = cols[:], scale = 0.03, alpha = 0.8,
-                    v = {0, height, 0}, seed = seed, pairs = ps.halo,
-                )
-                seed += 17
+                for _ in 0..<ps.n do append(&spots, o)
             }
         } else {
-            particle_emit_box(
-                &world.particles, mode, n_emit,
-                center = center, spread = spread,
-                colors = cols[:], scale = 0.02, alpha = 1,
-                v = {meta.R if meta.R > 0 else 1.3, height, 0},
-                seed = seed, pairs = ps.halo,
-            )
-            seed += 31
+            for _ in 0..<ps.n {
+                if ps.spread != ([3]f32{}) {
+                    x := c[0] + (lcg_next(&lcg) - 0.5) * 2 * ps.spread[0]
+                    y := c[1] + lcg_next(&lcg) * ps.spread[1]
+                    z := c[2] + (lcg_next(&lcg) - 0.5) * 2 * ps.spread[2]
+                    append(&spots, [3]f32{x, y, z})
+                } else {
+                    ang := lcg_next(&lcg) * 6.28
+                    rad := math.sqrt(lcg_next(&lcg)) * meta.R * (0.7 if mode == .Shaft else 1)
+                    y: f32
+                    #partial switch mode {
+                    case .Fog:   y = 0.05 + lcg_next(&lcg) * 0.22
+                    case .Shaft: y = top * 0.55
+                    case:        y = 0.06 + lcg_next(&lcg) * (top + 0.3)
+                    }
+                    append(&spots, [3]f32{math.cos(ang) * rad, y, math.sin(ang) * rad})
+                }
+            }
+        }
+
+        for o in spots {
+            pos := [3]f32{o[0], o[1] + ground_y, o[2]}
+            r   := [3]f32{mulberry32_next(&seeds), mulberry32_next(&seeds), mulberry32_next(&seeds)}
+            #partial switch mode {
+            case .Fog:    // low mist: big, flat, faint
+                sx := 0.3 + lcg_next(&lcg) * 0.25
+                sz := 0.3 + lcg_next(&lcg) * 0.25
+                particle_put(&world.particles, mode, pos, {sx, 0.035, sz}, ident, alpha, pick(cols[:], &lcg), centre, v, r)
+            case .Shaft:  // tall, slightly tilted light
+                sx := 0.07 + lcg_next(&lcg) * 0.06
+                sz := 0.07 + lcg_next(&lcg) * 0.06
+                particle_put(&world.particles, mode, pos, {sx, top * 0.75, sz}, tilt, alpha, pick(cols[:], &lcg), centre, v, r)
+            case:
+                k: f32
+                #partial switch mode {
+                case .Smoke: k = meta.h * 0.9
+                case .Leaf:  k = meta.h * 0.5
+                case:        k = meta.h * (0.28 + lcg_next(&lcg) * 0.14)
+                }
+                sy := k * 0.6 if mode == .Leaf else k
+                particle_put(&world.particles, mode, pos, {k, sy, k}, ident, alpha, pick(cols[:], &lcg), centre, v, r)
+                if ps.halo {
+                    particle_put(&world.particles, mode, pos, {k * 5.5, k * 5.5, k * 5.5}, ident, 0.18, pick(cols[:], &lcg), centre, v, r)
+                }
+            }
         }
     }
 
@@ -281,4 +324,10 @@ dio_world_destroy :: proc(w: ^Dio_World) {
     particle_system_destroy(&w.particles)
     delete(w.palette)
     delete(w.glow_pal)
+}
+
+// world.js's rnd(): a 32-bit LCG in [0, 1).
+lcg_next :: proc(seed: ^u32) -> f32 {
+    seed^ = seed^ * 1664525 + 1013904223
+    return f32(f64(seed^) / 4294967296.0)
 }

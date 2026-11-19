@@ -208,10 +208,19 @@ shade_model_surfels :: proc(
         cool := [3]f32{0.92, 0.95, 1.05}
         warm := [3]f32{1.04, 1.00, 0.95}
         tint := cool if ndl <= 0 else warm
+        col := [3]f32{
+            f32(albedo[0]) * light * tint[0],
+            f32(albedo[1]) * light * tint[1],
+            f32(albedo[2]) * light * tint[2],
+        }
+        // the island's lamps and fires light the creature too (live_update)
+        for k in 0..<live.count {
+            col += point_light_add(live.lights[k], s.pos, nrm, albedo)
+        }
         s.color = {
-            u8(math.clamp(f32(albedo[0]) * light * tint[0], 0, 255)),
-            u8(math.clamp(f32(albedo[1]) * light * tint[1], 0, 255)),
-            u8(math.clamp(f32(albedo[2]) * light * tint[2], 0, 255)),
+            u8(math.clamp(col[0], 0, 255)),
+            u8(math.clamp(col[1], 0, 255)),
+            u8(math.clamp(col[2], 0, 255)),
             255,
         }
     }

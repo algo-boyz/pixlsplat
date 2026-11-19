@@ -49,8 +49,71 @@ cyl_dist :: proc(cy: Cyl, p: [3]f32) -> f32 {
 
 Prim_Kind :: enum { Sphere, Ellipsoid, Cone, Box, Cyl, Func }
 
+// ---- displacement (port of JS displace(shape, fn)) -------------------------
+// The JS authoring code wraps a primitive in a closure that adds a function of
+// the position to its distance. Odin has no closures, so the few displacement
+// patterns the scenes use are data: any Prim can carry one, and prim_dist adds
+// it after the base distance. No global slots, no limit on how many.
+Disp_Mode :: enum u8 {
+    None,
+    Noise,       // sum of up to two terms: amp * (vnoise3(p * freq) - bias)
+    Radial_Cos,  // amp * cos(atan2(z - cz, x - cx) * n) * sstep(y1, y0, p.y): ribbed tent
+    Axial_Sin,   // amp * sin(p.y * freq): ringed trunk
+}
+
+Displace :: struct {
+    mode:   Disp_Mode,
+    amp:    [2]f32,
+    freq:   [2]f32,
+    bias:   [2]f32,
+    centre: [2]f32,   // Radial_Cos: x, z of the axis
+    n:      f32,      // Radial_Cos: number of ribs
+    y0, y1: f32,      // Radial_Cos: sstep(y0, y1, p.y) fades the ribs along the height
+}
+
+// amp * (vnoise3(p * freq) - bias). bias 0.5 centres the noise on the surface,
+// 0 only pushes it one way (floating rocks, boulders).
+disp_noise :: proc(amp, freq: f32, bias: f32 = 0) -> Displace {
+    return {mode = .Noise, amp = {amp, 0}, freq = {freq, 0}, bias = {bias, 0}}
+}
+
+// Two noise octaves, as in the lighthouse rock:
+//   -0.11 * (vnoise3(4p) - 0.5) - 0.035 * vnoise3(11p)
+disp_noise2 :: proc(amp1, freq1, bias1, amp2, freq2, bias2: f32) -> Displace {
+    return {mode = .Noise, amp = {amp1, amp2}, freq = {freq1, freq2}, bias = {bias1, bias2}}
+}
+
+// amp * cos(atan2(z - cz, x - cx) * n) * sstep(y_hi, y_lo, p.y)
+disp_radial_cos :: proc(cx, cz, amp, n, y_hi, y_lo: f32) -> Displace {
+    return {mode = .Radial_Cos, amp = {amp, 0}, centre = {cx, cz}, n = n, y0 = y_hi, y1 = y_lo}
+}
+
+disp_axial_sin :: proc(amp, freq: f32) -> Displace {
+    return {mode = .Axial_Sin, amp = {amp, 0}, freq = {freq, 0}}
+}
+
+displace_eval :: proc(d: Displace, p: [3]f32) -> f32 {
+    switch d.mode {
+    case .None:
+        return 0
+    case .Noise:
+        v := d.amp[0] * (vnoise3(p.x * d.freq[0], p.y * d.freq[0], p.z * d.freq[0]) - d.bias[0])
+        if d.amp[1] != 0 {
+            v += d.amp[1] * (vnoise3(p.x * d.freq[1], p.y * d.freq[1], p.z * d.freq[1]) - d.bias[1])
+        }
+        return v
+    case .Radial_Cos:
+        a := math.atan2(p.z - d.centre[1], p.x - d.centre[0])
+        return d.amp[0] * math.cos(a * d.n) * sstep(d.y0, d.y1, p.y)
+    case .Axial_Sin:
+        return d.amp[0] * math.sin(p.y * d.freq[0])
+    }
+    return 0
+}
+
 Prim :: struct {
     kind:   Prim_Kind,
+    disp:   Displace,
     mat:    int,
     k:      f32,
     is_sub: bool,
@@ -118,15 +181,23 @@ shape_sub_func :: proc(s: ^Shape, f: proc(p: [3]f32) -> f32, mat: int) {
 }
 
 prim_dist :: proc(pr: Prim, p: [3]f32) -> f32 {
+    d: f32 = 1e9
     switch pr.kind {
-    case .Sphere:    return sphere_dist(pr.sphere, p)
-    case .Ellipsoid: return ellipsoid_dist(pr.ellipsoid, p)
-    case .Cone:      return cone_dist(pr.cone, p)
-    case .Box:       return box_dist(pr.box, p)
-    case .Cyl:       return cyl_dist(pr.cyl, p)
-    case .Func:      return pr.f(p)
+    case .Sphere:    d = sphere_dist(pr.sphere, p)
+    case .Ellipsoid: d = ellipsoid_dist(pr.ellipsoid, p)
+    case .Cone:      d = cone_dist(pr.cone, p)
+    case .Box:       d = box_dist(pr.box, p)
+    case .Cyl:       d = cyl_dist(pr.cyl, p)
+    case .Func:      d = pr.f(p)
     }
-    return 1e9
+    if pr.disp.mode != .None do d += displace_eval(pr.disp, p)
+    return d
+}
+
+// Displace the primitive added last: shape_add_cone(...); shape_displace(&s, disp_axial_sin(...)).
+shape_displace :: proc(s: ^Shape, d: Displace) {
+    assert(len(s.adds) > 0)
+    s.adds[len(s.adds) - 1].disp = d
 }
 
 far_bound :: proc(b: [4]f32, p: [3]f32) -> f32 {
