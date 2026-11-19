@@ -290,7 +290,7 @@ main :: proc() {
     defer delete(order)
 
     yaw, pitch: f32 = 0.9, 0.32
-    dist: f32 = 3.8
+    dist: f32 = 5.0
     dragging := false
     last_mouse: rl.Vector2
 
@@ -309,7 +309,9 @@ main :: proc() {
         }
 
         wheel := rl.GetMouseWheelMove()
-        dist = math.clamp(dist - wheel * 0.2, 1.8, 9)
+        // Allow a wider pull-back so the whole island stays in frame while
+        // still inside FOG_START (see render.odin) for a lit fit-view.
+        dist = math.clamp(dist - wheel * 0.25, 1.5, 14)
 
         // toggles, same letters as the original's panel
         if rl.IsKeyPressed(.Q) do cfg.quant   = !cfg.quant

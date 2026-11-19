@@ -1,26 +1,31 @@
 # Gaussian splatting pixel art
 
 <p align="center">
-  <a href="assets/demo.png">
-    <img src="assets/demo.png" alt="hello island" width="960">
+  <a href="assets/island.png">
+    <img src="assets/island.png" alt="island" width="960">
   </a>
 </p>
 
+<p align="center">
+  <a href="assets/shrine.png">
+    <img src="assets/shrine.png" alt="shrine" width="960">
+  </a>
+</p>
 
-## Install Odin
+<p align="center">
+  <a href="assets/caravan.png">
+    <img src="assets/caravan.png" alt="caravan" width="960">
+  </a>
+</p>
 
-```bash
-git clone https://github.com/odin-lang/Odin  && cd Odin/
+<p align="center">
+  <a href="assets/minotaur.png">
+    <img src="assets/minotaur.png" alt="minotaur" width="960">
+  </a>
+</p>
 
-git checkout dev-2026-11a 
-
-git lfs pull
-
-LLVM_CONFIG=/opt/homebrew/opt/llvm/bin/llvm-config make release-native 
-
-echo 'export PATH="/Users/macbas/odin/Odin:$PATH"' >> ~/.zshrc
-
-source ~/.zshrc
-
-odin version ➜ dev-2026-11:9a6991685
-```
+<p align="center">
+  <a href="assets/toad.png">
+    <img src="assets/toad.png" alt="toad" width="960">
+  </a>
+</p>

@@ -193,8 +193,10 @@ draw_oriented_blade :: proc(pos, right, up: [3]f32, half_w, half_h: f32, col: rl
 
 // Fog: fade colour toward a dark background between start and end distance.
 // Matches shade.js: mix(col, vec3(0.03,0.035,0.05), 0.75 * smoothstep(fog.x, fog.y, dist))
-FOG_START :: f32(3)
-FOG_END   :: f32(6)
+// Tuned for island+creature framing: full diorama sits around dist 4–8.
+// Old 3–6 put the "fit" orbit inside heavy fog so models looked nearly black.
+FOG_START :: f32(7)
+FOG_END   :: f32(16)
 FOG_COL   :: [3]f32{0.03, 0.035, 0.05}
 
 apply_fog_color :: proc(col: rl.Color, dist: f32, emissive := false) -> rl.Color {
