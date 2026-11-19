@@ -15,7 +15,7 @@ ART_H :: 360
 Sort_Item :: struct {
     d:    f32,    // distance along the view direction
     i:    i32,
-    free: bool,   // index into free.items instead of surfels
+    free: bool,   // index into free_items instead of surfels
 }
 
 // The colour is already lit (bake() in island.odin), so it is drawn as is.
@@ -80,7 +80,7 @@ sway_offset :: proc(p: [3]f32, t: f32) -> [3]f32 {
 
 main :: proc() {
     rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
-    rl.InitWindow(1280, 720, "pixlsplat – Hello island")
+    rl.InitWindow(1280, 720, "pixlsplat")
     defer rl.CloseWindow()
     rl.SetTargetFPS(60)
 
@@ -117,33 +117,84 @@ main :: proc() {
         projection = .PERSPECTIVE,
     }
 
-    fmt.println("Building scene…")
-    surfels, free := build_hello()
+    // Scene sources: pre-baked .dio under assets/models/, or procedural hello.
+    // Keys 1–4 switch; default prefers shrine.dio then hello build.
+    Scene_Kind :: enum { Hello_Build, Dio }
+    scene_name := "shrine"
+    scene_kind := Scene_Kind.Dio
+
+    surfels: [dynamic]Surfel
+    free_items: [dynamic]Free_Splat
+    particles: Particle_System
+    particles = particle_system_make()
     defer {
         delete(surfels)
-        delete(free.items)
+        delete(free_items)
+        particle_system_destroy(&particles)
     }
-    fmt.printf("Generated %d SDF surfels + %d free splats\n", len(surfels), len(free.items))
 
-    // GPU-style particle system (CPU update): fireflies + optional shafts
-    particles := particle_system_make()
-    defer particle_system_destroy(&particles)
-    particle_emit_box(
-        &particles, .Blink, 18,
-        center = {0, 0.3, 0}, spread = {1.1, 0.5, 1.1},
-        colors = {{255, 207, 90, 255}, {255, 241, 192, 255}},
-        scale = 0.018, alpha = 1, seed = 99, pairs = true, // particle + halo
-    )
-    // Soft sun shafts landing near the lantern / centre
-    shafts_emit(
-        &particles,
-        beams = {
-            {to = {0.2, 0.0, 0.1}, len = 2.4, r = 0.12},
-            {to = {-0.3, 0.05, 0.35}, len = 2.0, r = 0.1},
-        },
-        colors = {{0x8a, 0x73, 0x56, 255}, {0x4e, 0x3f, 0x3a, 255}},
-        alpha = 0.28, n = 12, seed = 11,
-    )
+    load_scene :: proc(
+        name: string,
+        kind: Scene_Kind,
+        surfels: ^[dynamic]Surfel,
+        free_items: ^[dynamic]Free_Splat,
+        particles: ^Particle_System,
+        post: ^Post,
+    ) {
+        clear(surfels)
+        clear(free_items)
+        particle_system_destroy(particles)
+        particles^ = particle_system_make()
+
+        if kind == .Dio {
+            path := fmt.tprintf("assets/models/%s.dio", name)
+            world, ok := load_dio(path)
+            if ok {
+                for s in world.surfels do append(surfels, s)
+                for f in world.free do append(free_items, f)
+                // steal particle system
+                particles^ = world.particles
+                world.particles = {}
+                if len(world.palette) > 0 {
+                    glow := world.glow_pal[:] if len(world.glow_pal) > 0 else [][4]u8{}
+                    post_set_palette(post, world.palette[:], glow, world.background)
+                }
+                dio_world_destroy(&world)
+                fmt.printf("Loaded %s (%d surfels + %d free)\n", path, len(surfels^), len(free_items^))
+                return
+            }
+            fmt.eprintf("Failed to load %s — falling back to hello build\n", path)
+        }
+        // Procedural hello
+        s, free := build_hello()
+        for x in s do append(surfels, x)
+        delete(s)
+        for f in free_items do append(free_items, f)
+        // TODO:
+        // delete(free_items)
+        // Error: No procedures or ambiguous call for procedure group 'delete' that match with the given arguments 
+        // Given argument types: 
+        // • ^[dynamic]Free_Splat 
+        particle_emit_box(
+            particles, .Blink, 18,
+            center = {0, 0.3, 0}, spread = {1.1, 0.5, 1.1},
+            colors = {{255, 207, 90, 255}, {255, 241, 192, 255}},
+            scale = 0.018, alpha = 1, seed = 99, pairs = true,
+        )
+        shafts_emit(
+            particles,
+            beams = {
+                {to = {0.2, 0.0, 0.1}, len = 2.4, r = 0.12},
+                {to = {-0.3, 0.05, 0.35}, len = 2.0, r = 0.1},
+            },
+            colors = {{0x8a, 0x73, 0x56, 255}, {0x4e, 0x3f, 0x3a, 255}},
+            alpha = 0.28, n = 12, seed = 11,
+        )
+        post_set_palette(post, PALETTE[:], GLOW_PALETTE[:], PALETTE[0])
+        fmt.printf("Built hello (%d surfels + %d free)\n", len(surfels^), len(free_items^))
+    }
+
+    load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
 
     order: [dynamic]Sort_Item
     defer delete(order)
@@ -176,6 +227,27 @@ main :: proc() {
         if rl.IsKeyPressed(.E) do cfg.outline = !cfg.outline
         if rl.IsKeyPressed(.S) do cfg.ss      = 3 - cfg.ss          // 1 <-> 2
         if rl.IsKeyPressed(.D) do cfg.dither  = 0 if cfg.dither >= 1 else cfg.dither + 0.5
+        // Scene switch: 1 hello (build) · 2 shrine · 3 lighthouse · 4 caravan · 5 hello.dio
+        if rl.IsKeyPressed(.ONE) {
+            scene_name, scene_kind = "hello", .Hello_Build
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+        }
+        if rl.IsKeyPressed(.TWO) {
+            scene_name, scene_kind = "shrine", .Dio
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+        }
+        if rl.IsKeyPressed(.THREE) {
+            scene_name, scene_kind = "lighthouse", .Dio
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+        }
+        if rl.IsKeyPressed(.FOUR) {
+            scene_name, scene_kind = "caravan", .Dio
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+        }
+        if rl.IsKeyPressed(.FIVE) {
+            scene_name, scene_kind = "hello", .Dio
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+        }
 
         camera.position = {
             math.cos(yaw) * math.cos(pitch) * dist,
@@ -202,7 +274,7 @@ main :: proc() {
         t := f32(rl.GetTime())
 
         // grass blades: hard ellipses; sway with time
-        for fs in free.items {
+        for fs in free_items {
             if fs.kind == .Sway {
                 off := sway_offset(fs.pos, t)
                 pos := fs.pos + off
@@ -219,14 +291,14 @@ main :: proc() {
                 dist := linalg.vector_length(s.pos - camera.position)
                 draw_surfel(s, false, dist)
             }
-            for fs in free.items {
+            for fs in free_items {
                 if fs.kind == .Lit || fs.kind == .Emissive || fs.kind == .Litter {
                     dist := linalg.vector_length(fs.pos - camera.position)
                     draw_free(fs, right, cup, false, dist)
                 }
             }
             rlgl.DisableDepthMask()
-            for fs in free.items {
+            for fs in free_items {
                 if fs.kind == .Glow {
                     dist := linalg.vector_length(fs.pos - camera.position)
                     draw_free(fs, right, cup, false, dist)
@@ -241,7 +313,7 @@ main :: proc() {
             for s, i in surfels {
                 append(&order, Sort_Item{d = linalg.dot(s.pos - camera.position, fwd), i = i32(i)})
             }
-            for fs, i in free.items {
+            for fs, i in free_items {
                 if fs.kind == .Sway do continue
                 append(&order, Sort_Item{d = linalg.dot(fs.pos - camera.position, fwd), i = i32(i), free = true})
             }
@@ -250,7 +322,7 @@ main :: proc() {
             rlgl.DisableDepthMask()
             for it in order {
                 if it.free {
-                    fs := free.items[it.i]
+                    fs := free_items[it.i]
                     dist := linalg.vector_length(fs.pos - camera.position)
                     draw_free(fs, right, cup, true, dist)
                 } else {
@@ -278,12 +350,13 @@ main :: proc() {
         dst := rl.Rectangle{0, 0, f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())}
         rl.DrawTexturePro(art_rt.texture, src, dst, {0, 0}, 0, rl.WHITE)
 
-        rl.DrawText("Hello island", 10, 10, 20, rl.RAYWHITE)
+        rl.DrawText(fmt.ctprintf("%s", scene_name), 10, 10, 20, rl.RAYWHITE)
         rl.DrawText(fmt.ctprintf("%d surfels + %d free | drag orbit, wheel zoom | %d fps",
-            len(surfels), len(free.items), rl.GetFPS()), 10, 35, 18, {180,180,180,255})
-        rl.DrawText(fmt.ctprintf("[Q] palette %s  [X] hard pixels %s  [S] supersample %dx%d  [E] outline %s  [D] dither %.1f",
+            len(surfels), len(free_items), rl.GetFPS()), 10, 35, 18, {180,180,180,255})
+        rl.DrawText(fmt.ctprintf("[Q] palette %s  [X] hard %s  [S] ss %dx%d  [E] outline %s  [D] dither %.1f",
             cfg.quant ? "on" : "off", cfg.crisp ? "on" : "off", cfg.ss, cfg.ss,
             cfg.outline ? "on" : "off", cfg.dither), 10, 58, 16, {180,180,180,255})
+        rl.DrawText("[1] hello build  [2] shrine  [3] lighthouse  [4] caravan  [5] hello.dio", 10, 78, 16, {160,160,160,255})
         rl.EndDrawing()
     }
 }
