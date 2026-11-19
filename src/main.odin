@@ -128,10 +128,17 @@ main :: proc() {
     free_items: [dynamic]Free_Splat
     particles: Particle_System
     particles = particle_system_make()
+    // Live skinned model (nil when showing a pure .dio / hello scene).
+    active_model: Psf_Model
+    active_rig:   Rig
+    model_start:  int           // index of first model surfel in `surfels`
+    has_model:    bool
     defer {
         delete(surfels)
         delete(free_items)
         particle_system_destroy(&particles)
+        psf_model_destroy(&active_model)
+        rig_destroy(&active_rig)
     }
 
     load_scene :: proc(
@@ -141,11 +148,21 @@ main :: proc() {
         free_items: ^[dynamic]Free_Splat,
         particles: ^Particle_System,
         post: ^Post,
+        model: ^Psf_Model,
+        rig: ^Rig,
+        model_start: ^int,
+        has_model: ^bool,
     ) {
         clear(surfels)
         clear(free_items)
         particle_system_destroy(particles)
         particles^ = particle_system_make()
+        if has_model^ {
+            psf_model_destroy(model)
+            rig_destroy(rig)
+            has_model^ = false
+            model_start^ = 0
+        }
 
         if kind == .Dio {
             path := fmt.tprintf("assets/models/%s.dio", name)
@@ -166,60 +183,77 @@ main :: proc() {
             }
             fmt.eprintf("Failed to load %s — falling back to hello build\n", path)
         } else if kind == .Psf {
-            // Match the three.js viewer: model stands on its pre-baked island.
-            // Original flow is `npm run island <model> <theme>` → <name>.dio, then
-            // viewer loads the .dio environment and layers the .psf on top.
-            island_n := 0
-            dio_path := fmt.tprintf("assets/models/%s.dio", name)
-            if world, ok := load_dio(dio_path); ok {
-                for s in world.surfels do append(surfels, s)
-                for f in world.free do append(free_items, f)
-                particles^ = world.particles
-                world.particles = {}
-                if len(world.palette) > 0 {
-                    glow := world.glow_pal[:] if len(world.glow_pal) > 0 else [][4]u8{}
-                    post_set_palette(post, world.palette[:], glow, world.background)
-                }
-                island_n = len(surfels^)
-                dio_world_destroy(&world)
-                fmt.printf("Island %s (%d surfels + %d free)\n", dio_path, island_n, len(free_items^))
-            } else {
-                fmt.eprintf("No island for %s (expected %s) — model only\n", name, dio_path)
-            }
+            // Match three.js /?m=<name>:
+            //   groundY = -model.size.y/2  (island authored with feet at y=0)
+            //   load island.dio shifted by groundY, layer model.psf on top,
+            //   keep model + rig alive for dual-quaternion skinning each frame.
 
             path := fmt.tprintf("assets/models/%s.psf", name)
-            model, ok := load_psf(path)
-            if ok {
-                skinned := model.skinned
-                model_start := len(surfels^)
-                for s in model.surfels do append(surfels, s)
-                // Shade only the model slice: island light is already baked.
-                shade_model_surfels(surfels[model_start:], {0.45, 0.8, 0.35}, 0.55, 0.35)
-                // If we had no island palette, build a minimal one from the model.
+            m, mok := load_psf(path)
+            if !mok {
+                fmt.eprintf("Failed to load %s — falling back to hello build\n", path)
+            } else {
+                ground_y := -m.size[1] * 0.5
+
+                island_n := 0
+                dio_path := fmt.tprintf("assets/models/%s.dio", name)
+                if world, ok := load_dio(dio_path); ok {
+                    for s in world.surfels {
+                        ss := s
+                        ss.pos.y += ground_y
+                        append(surfels, ss)
+                    }
+                    for f in world.free {
+                        ff := f
+                        ff.pos.y += ground_y
+                        append(free_items, ff)
+                    }
+                    particles^ = world.particles
+                    world.particles = {}
+                    if len(world.palette) > 0 {
+                        glow := world.glow_pal[:] if len(world.glow_pal) > 0 else [][4]u8{}
+                        post_set_palette(post, world.palette[:], glow, world.background)
+                    }
+                    island_n = len(surfels^)
+                    dio_world_destroy(&world)
+                    fmt.printf("Island %s (%d surfels) at groundY=%.3f\n", dio_path, island_n, ground_y)
+                } else {
+                    fmt.eprintf("No island for %s — model only\n", name)
+                }
+
+                model_start^ = len(surfels^)
+                for s in m.surfels do append(surfels, s)
+                shade_model_surfels(surfels[model_start^:], {0.45, 0.8, 0.35}, 0.55, 0.35)
+
                 if island_n == 0 {
                     pal := make([dynamic][4]u8)
                     defer delete(pal)
                     append(&pal, [4]u8{12, 14, 18, 255})
-                    step := max(1, len(model.surfels) / 24)
-                    for i := 0; i < len(model.surfels); i += step {
-                        append(&pal, model.surfels[i].color)
+                    step := max(1, len(m.surfels) / 24)
+                    for i := 0; i < len(m.surfels); i += step {
+                        append(&pal, m.surfels[i].color)
                     }
                     post_set_palette(post, pal[:], {}, pal[0])
                 }
-                psf_model_destroy(&model)
-                fmt.printf("Model %s (%d surfels, skinned=%v) on island (%d env)\n",
-                    path, len(surfels^) - model_start, skinned, island_n)
-                // Joint/weight arrays were destroyed with the temporary Psf_Model.
-                // Live dual-quaternion skinning keeps the model alive and updates
-                // bone dual-quats each frame (port of src/viewer/rig.js).
+
+                model^ = m
+                m = {}
+                has_model^ = true
+
+                rig_path := fmt.tprintf("assets/models/%s.rig.glb", name)
+                if r, rok := load_rig(rig_path, model.center, model.unit); rok {
+                    r.ground_y = ground_y
+                    rig^ = r
+                    fmt.printf("Model %s (%d surfels, skinned=%v) + rig\n",
+                        path, len(surfels^) - model_start^, model.skinned)
+                } else {
+                    lift: f32 = 0
+                    stand_on_ground(model, nil, ground_y, 1, &lift, surfels[model_start^:])
+                    fmt.printf("Model %s (%d surfels, skinned=%v) static, lift=%.3f\n",
+                        path, len(surfels^) - model_start^, model.skinned, lift)
+                }
                 return
             }
-            // Island alone is still a valid scene if the .psf is missing.
-            if island_n > 0 {
-                fmt.eprintf("Failed to load model %s — showing island only\n", path)
-                return
-            }
-            fmt.eprintf("Failed to load %s — falling back to hello build\n", path)
         }
         // Procedural hello
         s, free := build_hello()
@@ -250,7 +284,7 @@ main :: proc() {
         fmt.printf("Built hello (%d surfels + %d free)\n", len(surfels^), len(free_items^))
     }
 
-    load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+    load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
 
     order: [dynamic]Sort_Item
     defer delete(order)
@@ -286,41 +320,41 @@ main :: proc() {
         // Scene switch: 1 hello (build) · 2 shrine · 3 lighthouse · 4 caravan · 5 hello.dio
         if rl.IsKeyPressed(.ONE) {
             scene_name, scene_kind = "hello", .Hello_Build
-            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
         }
         if rl.IsKeyPressed(.TWO) {
             scene_name, scene_kind = "shrine", .Dio
-            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
         }
         if rl.IsKeyPressed(.THREE) {
             scene_name, scene_kind = "lighthouse", .Dio
-            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
         }
         if rl.IsKeyPressed(.FOUR) {
             scene_name, scene_kind = "caravan", .Dio
-            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
         }
         if rl.IsKeyPressed(.FIVE) {
             scene_name, scene_kind = "hello", .Dio
-            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
         }
 
         // PSF models (static view; skin weights present in file but not animated yet)
         if rl.IsKeyPressed(.SIX) {
             scene_name, scene_kind = "minotaur", .Psf
-            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
         }
         if rl.IsKeyPressed(.SEVEN) {
             scene_name, scene_kind = "hyena", .Psf
-            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
         }
         if rl.IsKeyPressed(.EIGHT) {
             scene_name, scene_kind = "toad", .Psf
-            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
         }
         if rl.IsKeyPressed(.NINE) {
             scene_name, scene_kind = "dragon_shield", .Psf
-            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post, &active_model, &active_rig, &model_start, &has_model)
         }
 
         camera.position = {
@@ -329,6 +363,17 @@ main :: proc() {
             math.sin(yaw) * math.cos(pitch) * dist,
         }
         camera.target = {0, 0.22, 0}
+
+        // Dual-quaternion skinning + feet-on-ground (port of rig.js).
+        if has_model {
+            dt := rl.GetFrameTime()
+            slice := surfels[model_start:]
+            if active_rig.bones != nil {
+                rig_update(&active_rig, dt)
+                skin_apply(&active_model, active_rig.bones, slice)
+                stand_on_ground(&active_model, active_rig.poses, active_rig.ground_y, dt, &active_rig.lift, slice)
+            }
+        }
 
         fwd   := linalg.normalize(camera.target - camera.position)
         right := linalg.normalize(linalg.cross(fwd, camera.up))
@@ -430,7 +475,7 @@ main :: proc() {
         rl.DrawText(fmt.ctprintf("[Q] palette %s  [X] hard %s  [S] ss %dx%d  [E] outline %s  [D] dither %.1f",
             cfg.quant ? "on" : "off", cfg.crisp ? "on" : "off", cfg.ss, cfg.ss,
             cfg.outline ? "on" : "off", cfg.dither), 10, 58, 16, {180,180,180,255})
-        rl.DrawText("[1] hello  [2-5] scenes  [6] minotaur  [7] hyena  [8] toad  [9] dragon  (island+model)", 10, 78, 16, {160,160,160,255})
+        rl.DrawText("[1] hello  [2-5] scenes  [6] minotaur  [7] hyena  [8] toad  [9] dragon  (island+skin)", 10, 78, 16, {160,160,160,255})
         rl.EndDrawing()
     }
 }

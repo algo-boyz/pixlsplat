@@ -25,14 +25,16 @@ import "core:math/linalg"
 import "core:os"
 
 Psf_Model :: struct {
-    surfels:  [dynamic]Surfel,
-    joints:   [][4]u8,   // nil when not skinned; parallel to surfels
-    weights:  [][4]u8,   // nil when not skinned
-    spacing:  f32,       // surfel lattice spacing in viewer units
-    skinned:  bool,
-    center:   [3]f32,    // original centre (before recenter)
-    unit:     f32,       // scale applied (longest side → 2)
-    size:     [3]f32,    // extents after scale
+    surfels:   [dynamic]Surfel,
+    rest_pos:  [][3]f32,  // bind positions (recentred); kept for re-skinning
+    rest_nrm:  [][3]f32,  // bind normals
+    joints:    [][4]u8,   // nil when not skinned; parallel to rest_pos
+    weights:   [][4]u8,   // nil when not skinned
+    spacing:   f32,       // surfel lattice spacing in viewer units
+    skinned:   bool,
+    center:    [3]f32,    // original centre (before recenter)
+    unit:      f32,       // scale applied (longest side → 2)
+    size:      [3]f32,    // extents after scale
 }
 
 load_psf :: proc(path: string) -> (model: Psf_Model, ok: bool) {
@@ -89,6 +91,8 @@ load_psf :: proc(path: string) -> (model: Psf_Model, ok: bool) {
     model.unit    = unit
     model.size    = extent * unit
 
+    model.rest_pos = make([][3]f32, count)
+    model.rest_nrm = make([][3]f32, count)
     for i in 0..<count {
         p := [3]f32{
             (pos[i*3]   - center[0]) * unit,
@@ -101,6 +105,8 @@ load_psf :: proc(path: string) -> (model: Psf_Model, ok: bool) {
         nrm := [3]f32{nx, ny, nz}
         if linalg.vector_length(nrm) > 1e-5 do nrm = linalg.normalize(nrm)
         fl := nor[i*4+3]
+        model.rest_pos[i] = p
+        model.rest_nrm[i] = nrm
         append(&model.surfels, Surfel{
             pos      = p,
             normal   = nrm,
@@ -131,6 +137,8 @@ load_psf :: proc(path: string) -> (model: Psf_Model, ok: bool) {
 
 psf_model_destroy :: proc(m: ^Psf_Model) {
     delete(m.surfels)
+    if m.rest_pos != nil do delete(m.rest_pos)
+    if m.rest_nrm != nil do delete(m.rest_nrm)
     if m.joints  != nil do delete(m.joints)
     if m.weights != nil do delete(m.weights)
     m^ = {}
