@@ -223,7 +223,7 @@ main :: proc() {
 
                 model_start^ = len(surfels^)
                 for s in m.surfels do append(surfels, s)
-                shade_model_surfels(surfels[model_start^:], {0.45, 0.8, 0.35}, 0.55, 0.35)
+                shade_model_surfels(model, surfels[model_start^:], exposure = 1.5, bands = 5)
 
                 if island_n == 0 {
                     pal := make([dynamic][4]u8)
@@ -365,6 +365,8 @@ main :: proc() {
         camera.target = {0, 0.22, 0}
 
         // Dual-quaternion skinning + feet-on-ground (port of rig.js).
+        // Re-shade from albedo each frame so lighting follows skinned normals
+        // and view-facing term (matches shade.js non-baked path).
         if has_model {
             dt := rl.GetFrameTime()
             slice := surfels[model_start:]
@@ -373,6 +375,7 @@ main :: proc() {
                 skin_apply(&active_model, active_rig.bones, slice)
                 stand_on_ground(&active_model, active_rig.poses, active_rig.ground_y, dt, &active_rig.lift, slice)
             }
+            shade_model_surfels(&active_model, slice, cam_pos = camera.position, exposure = 1.5, bands = 5)
         }
 
         fwd   := linalg.normalize(camera.target - camera.position)

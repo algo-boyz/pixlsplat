@@ -28,6 +28,7 @@ Psf_Model :: struct {
     surfels:   [dynamic]Surfel,
     rest_pos:  [][3]f32,  // bind positions (recentred); kept for re-skinning
     rest_nrm:  [][3]f32,  // bind normals
+    rest_col:  [][4]u8,   // albedo (pre-light); shade writes lit colour each frame
     joints:    [][4]u8,   // nil when not skinned; parallel to rest_pos
     weights:   [][4]u8,   // nil when not skinned
     spacing:   f32,       // surfel lattice spacing in viewer units
@@ -93,6 +94,7 @@ load_psf :: proc(path: string) -> (model: Psf_Model, ok: bool) {
 
     model.rest_pos = make([][3]f32, count)
     model.rest_nrm = make([][3]f32, count)
+    model.rest_col = make([][4]u8, count)
     for i in 0..<count {
         p := [3]f32{
             (pos[i*3]   - center[0]) * unit,
@@ -107,10 +109,11 @@ load_psf :: proc(path: string) -> (model: Psf_Model, ok: bool) {
         fl := nor[i*4+3]
         model.rest_pos[i] = p
         model.rest_nrm[i] = nrm
+        model.rest_col[i] = {rgba[i*4], rgba[i*4+1], rgba[i*4+2], 255}
         append(&model.surfels, Surfel{
             pos      = p,
             normal   = nrm,
-            color    = {rgba[i*4], rgba[i*4+1], rgba[i*4+2], 255},
+            color    = model.rest_col[i],
             ao       = 1,
             mat      = 0,
             emissive = (fl & 1) != 0,
@@ -139,31 +142,76 @@ psf_model_destroy :: proc(m: ^Psf_Model) {
     delete(m.surfels)
     if m.rest_pos != nil do delete(m.rest_pos)
     if m.rest_nrm != nil do delete(m.rest_nrm)
+    if m.rest_col != nil do delete(m.rest_col)
     if m.joints  != nil do delete(m.joints)
     if m.weights != nil do delete(m.weights)
     m^ = {}
 }
 
-// Simple lambertian + ambient shade for unbaked model surfels.
-// light_dir should point *toward* the light. Mutates colours in place.
-// Matches the spirit of the original shade.js modifier (ambient + one key).
+// Per-surfel lighting matching src/render/shade.js (non-baked path):
+//   light = mix(AMBIENT_LOW, AMBIENT_HIGH, n.y*0.5+0.5)
+//         + DIFFUSE * max(ndl, 0)
+//         + 0.22 * max(facing, 0)
+//   optional cel bands; exposure; cool/warm tint.
+// Albedo comes from model.rest_col so this can run every frame after skinning.
+MODEL_AMBIENT_LOW  :: f32(0.36)
+MODEL_AMBIENT_HIGH :: f32(0.58)
+MODEL_DIFFUSE      :: f32(0.62)
+MODEL_KEY_LIGHT    :: [3]f32{0.45, 0.8, 0.4}
+
 shade_model_surfels :: proc(
-    surfels: []Surfel,
-    light_dir: [3]f32,
-    light_strength: f32 = 0.55,
-    ambient: f32 = 0.35,
+    model: ^Psf_Model,
+    scene_slice: []Surfel,
+    cam_pos: [3]f32 = {},
+    exposure: f32 = 1.15,
+    bands: int = 5,
 ) {
-    ld := light_dir
+    ld := MODEL_KEY_LIGHT
     if linalg.vector_length(ld) > 1e-5 do ld = linalg.normalize(ld)
-    for &s in surfels {
-        if s.emissive do continue
-        ndl := max(0, linalg.dot(s.normal, ld))
-        k := ambient + light_strength * ndl
-        k = math.clamp(k, 0, 1.4)
+    n := min(len(scene_slice), len(model.rest_col))
+    for i in 0..<n {
+        s := &scene_slice[i]
+        albedo := model.rest_col[i]
+        if s.emissive {
+            s.color = {
+                u8(math.clamp(f32(albedo[0]) * 1.15, 0, 255)),
+                u8(math.clamp(f32(albedo[1]) * 1.15, 0, 255)),
+                u8(math.clamp(f32(albedo[2]) * 1.15, 0, 255)),
+                255,
+            }
+            continue
+        }
+        nrm := s.normal
+        // View-facing term (same idea as shade.js `facing`)
+        to_cam := cam_pos - s.pos
+        dist := linalg.vector_length(to_cam)
+        facing: f32 = 0
+        if dist > 1e-5 {
+            to_cam /= dist
+            facing = linalg.dot(nrm, to_cam)
+            // two-sided: flip normal if back-facing
+            if facing < 0 {
+                nrm = -nrm
+                facing = -facing
+            }
+        }
+        ndl := max(0, linalg.dot(nrm, ld))
+        hemi := nrm.y * 0.5 + 0.5
+        light := MODEL_AMBIENT_LOW + (MODEL_AMBIENT_HIGH - MODEL_AMBIENT_LOW) * hemi
+        light += MODEL_DIFFUSE * ndl + 0.22 * max(facing, 0)
+        if bands > 0 {
+            bf := f32(bands)
+            light = (math.floor(light * bf) + 0.5) / bf
+        }
+        light *= exposure
+        // cool shadows / warm light tint
+        cool := [3]f32{0.92, 0.95, 1.05}
+        warm := [3]f32{1.04, 1.00, 0.95}
+        tint := cool if ndl <= 0 else warm
         s.color = {
-            u8(math.clamp(f32(s.color[0]) * k, 0, 255)),
-            u8(math.clamp(f32(s.color[1]) * k, 0, 255)),
-            u8(math.clamp(f32(s.color[2]) * k, 0, 255)),
+            u8(math.clamp(f32(albedo[0]) * light * tint[0], 0, 255)),
+            u8(math.clamp(f32(albedo[1]) * light * tint[1], 0, 255)),
+            u8(math.clamp(f32(albedo[2]) * light * tint[2], 0, 255)),
             255,
         }
     }
