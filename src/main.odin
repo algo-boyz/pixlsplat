@@ -75,35 +75,7 @@ sway_offset :: proc(p: [3]f32, t: f32) -> [3]f32 {
     }
 }
 
-// Simple blink firefly particle (hello scene).
-Blink_Particle :: struct {
-    base:  [3]f32,
-    phase: f32,
-    color: [4]u8,
-}
-
-draw_blink_particle :: proc(bp: Blink_Particle, t: f32, cam_right, cam_up: [3]f32, soft: bool, cam_pos: [3]f32) {
-    // drift a little
-    p := bp.base + [3]f32{
-        0.08 * math.sin(t * 0.7 + bp.phase),
-        0.05 * math.sin(t * 1.1 + bp.phase * 1.7),
-        0.08 * math.cos(t * 0.55 + bp.phase * 0.9),
-    }
-    // blink envelope
-    pulse := 0.5 + 0.5 * math.sin(t * 3.2 + bp.phase * 5)
-    pulse = pulse * pulse
-    if pulse < 0.08 do return
-    a := u8(math.clamp(pulse, 0, 1) * 220)
-    dist := linalg.vector_length(p - cam_pos)
-    col := apply_fog_color({bp.color[0], bp.color[1], bp.color[2], a}, dist, emissive = true)
-    r := 0.018 * (SPLAT_STD_SOFT if soft else SPLAT_STD_DEV)
-    draw_billboard_disc(p, cam_right, cam_up, r, {col.r, col.g, col.b, a})
-    // soft halo
-    if pulse > 0.35 {
-        ha := u8(f32(a) * 0.35)
-        draw_billboard_disc(p, cam_right, cam_up, r * 2.4, {col.r, col.g, col.b, ha})
-    }
-}
+// Blink/fireflies: see particles.odin (Particle_Mode.Blink)
 
 
 main :: proc() {
@@ -153,23 +125,25 @@ main :: proc() {
     }
     fmt.printf("Generated %d SDF surfels + %d free splats\n", len(surfels), len(free.items))
 
-    // Fireflies: blink mode with halos (hello scene particles)
-    blinks := make([dynamic]Blink_Particle)
-    defer delete(blinks)
-    {
-        rng := mulberry32_new(99)
-        cols := [2][4]u8{{255, 207, 90, 255}, {255, 241, 192, 255}}
-        for i in 0..<18 {
-            bx := (mulberry32_next(&rng) * 2 - 1) * 1.1
-            by := 0.3 + (mulberry32_next(&rng) * 2 - 1) * 0.5
-            bz := (mulberry32_next(&rng) * 2 - 1) * 1.1
-            append(&blinks, Blink_Particle{
-                base  = {bx, by, bz},
-                phase = mulberry32_next(&rng) * math.TAU,
-                color = cols[i & 1],
-            })
-        }
-    }
+    // GPU-style particle system (CPU update): fireflies + optional shafts
+    particles := particle_system_make()
+    defer particle_system_destroy(&particles)
+    particle_emit_box(
+        &particles, .Blink, 18,
+        center = {0, 0.3, 0}, spread = {1.1, 0.5, 1.1},
+        colors = {{255, 207, 90, 255}, {255, 241, 192, 255}},
+        scale = 0.018, alpha = 1, seed = 99, pairs = true, // particle + halo
+    )
+    // Soft sun shafts landing near the lantern / centre
+    shafts_emit(
+        &particles,
+        beams = {
+            {to = {0.2, 0.0, 0.1}, len = 2.4, r = 0.12},
+            {to = {-0.3, 0.05, 0.35}, len = 2.0, r = 0.1},
+        },
+        colors = {{0x8a, 0x73, 0x56, 255}, {0x4e, 0x3f, 0x3a, 255}},
+        alpha = 0.28, n = 12, seed = 11,
+    )
 
     order: [dynamic]Sort_Item
     defer delete(order)
@@ -258,9 +232,8 @@ main :: proc() {
                     draw_free(fs, right, cup, false, dist)
                 }
             }
-            for bp in blinks {
-                draw_blink_particle(bp, t, right, cup, false, camera.position)
-            }
+            particle_update(&particles, t)
+            particle_draw(&particles, right, cup, camera.position, false)
             rlgl.EnableDepthMask()
         } else {
             // soft Gaussians: everything blends, so sort back to front
@@ -286,9 +259,8 @@ main :: proc() {
                     draw_surfel(s, true, dist)
                 }
             }
-            for bp in blinks {
-                draw_blink_particle(bp, t, right, cup, true, camera.position)
-            }
+            particle_update(&particles, t)
+            particle_draw(&particles, right, cup, camera.position, true)
             rlgl.EnableDepthMask()
         }
 
