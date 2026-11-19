@@ -117,9 +117,10 @@ main :: proc() {
         projection = .PERSPECTIVE,
     }
 
-    // Scene sources: pre-baked .dio under assets/models/, or procedural hello.
-    // Keys 1–4 switch; default prefers shrine.dio then hello build.
-    Scene_Kind :: enum { Hello_Build, Dio }
+    // Scene sources: pre-baked .dio under assets/models/, procedural hello,
+    // or converted .psf models (static for now; skin weights loaded when present).
+    // Keys 1–5: dio / hello · 6–9: psf creatures
+    Scene_Kind :: enum { Hello_Build, Dio, Psf }
     scene_name := "shrine"
     scene_kind := Scene_Kind.Dio
 
@@ -161,6 +162,34 @@ main :: proc() {
                 }
                 dio_world_destroy(&world)
                 fmt.printf("Loaded %s (%d surfels + %d free)\n", path, len(surfels^), len(free_items^))
+                return
+            }
+            fmt.eprintf("Failed to load %s — falling back to hello build\n", path)
+        } else if kind == .Psf {
+            path := fmt.tprintf("assets/models/%s.psf", name)
+            model, ok := load_psf(path)
+            if ok {
+                skinned := model.skinned
+                for s in model.surfels do append(surfels, s)
+                // Derive a small palette from the model colours so the pixel
+                // pass has something to vote with. Background stays dark.
+                pal := make([dynamic][4]u8)
+                defer delete(pal)
+                append(&pal, [4]u8{12, 14, 18, 255}) // near-black bg
+                // sample every Nth surfel into the palette (cheap stand-in for k-means)
+                step := max(1, len(model.surfels) / 24)
+                for i := 0; i < len(model.surfels); i += step {
+                    append(&pal, model.surfels[i].color)
+                }
+                post_set_palette(post, pal[:], {}, pal[0])
+                // Apply a one-shot directional light so unbaked albedo still
+                // has form under the hard-pixel pass.
+                shade_model_surfels(surfels[:], {0.45, 0.8, 0.35}, 0.55, 0.35)
+                psf_model_destroy(&model)
+                fmt.printf("Loaded %s (%d surfels, skinned=%v)\n", path, len(surfels^), skinned)
+                // Note: joint/weight arrays were destroyed with the temporary
+                // Psf_Model. For live dual-quaternion skinning, keep the model
+                // alive and update bone dual-quats each frame (see rig.js).
                 return
             }
             fmt.eprintf("Failed to load %s — falling back to hello build\n", path)
@@ -246,6 +275,24 @@ main :: proc() {
         }
         if rl.IsKeyPressed(.FIVE) {
             scene_name, scene_kind = "hello", .Dio
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+        }
+
+        // PSF models (static view; skin weights present in file but not animated yet)
+        if rl.IsKeyPressed(.SIX) {
+            scene_name, scene_kind = "minotaur", .Psf
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+        }
+        if rl.IsKeyPressed(.SEVEN) {
+            scene_name, scene_kind = "hyena", .Psf
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+        }
+        if rl.IsKeyPressed(.EIGHT) {
+            scene_name, scene_kind = "toad", .Psf
+            load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
+        }
+        if rl.IsKeyPressed(.NINE) {
+            scene_name, scene_kind = "dragon_shield", .Psf
             load_scene(scene_name, scene_kind, &surfels, &free_items, &particles, &post)
         }
 
