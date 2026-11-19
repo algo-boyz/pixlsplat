@@ -325,3 +325,5 @@ CMakeLists.txt
 sandbox/
 __pycache__/
 .DS_Store
+
+assets/models/alien
